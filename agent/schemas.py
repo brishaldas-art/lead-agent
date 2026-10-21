@@ -25,3 +25,15 @@ class SearchPlan(BaseModel):
     theme: Optional[str] = None
     queries: list[str] = []
     seed_orgs: list[str] = []
+
+from typing import Literal
+
+class ClassifiedResult(BaseModel):
+    result_id: int
+    relevant: bool
+    org_name: str
+    category: Literal["Sponsor", "College Delegation"]
+    city: str | None
+
+class ClassifiedBatch(BaseModel):
+    results: list[ClassifiedResult]

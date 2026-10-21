@@ -98,6 +98,8 @@ def plan_from_pdf(path: str) -> SearchPlan:
         candidates.extend(facts.mentioned_orgs)
     candidates.extend(scan_headings(text))
     seed_orgs = grounded(list(dict.fromkeys(candidates)), text)
+    first_line = text.strip().splitlines()[0] if text.strip() else ""
+    seed_orgs = [s for s in seed_orgs if s not in first_line]
 
     return SearchPlan(
         source="pdf",
@@ -117,7 +119,7 @@ def build_queries(plan: SearchPlan) -> SearchPlan:
     if plan.category in ("Sponsor", "Both"):
         for ind in plan.industries or ["technology"]:
             queries.append(f"{ind} companies sponsor college fests {city}")
-        queries.append(f"{theme} sponsors India")
+        queries.append(f"{city} college fest sponsors")
         for seed in plan.seed_orgs[:3]:
             queries.append(f"{seed} CSR head")
             queries.append(f"{seed} marketing head")

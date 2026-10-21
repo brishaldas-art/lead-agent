@@ -1,97 +1,106 @@
-"""Replan utilities for generating new search queries.
-Gemini only proposes wording; this module validates and decides whether to run them.
+"""Replan: ask Gemini for a few new search queries, then validate them in code.
+
+Gemini only proposes wording. Code decides which queries are allowed to run.
 """
 
 import logging
 import re
-from typing import List
+from typing import Iterable, List, Optional, Pattern
 
 from agent.gemini_client import ask
 from agent.prompts import REPLAN
 from agent.schemas import NewQueries
 
-_logger = logging.getLogger(__name__)
+_log = logging.getLogger("agent")
 
 MAX_NEW_QUERIES = 4
 MIN_WORDS = 3
-MAX_WORDS = 8
-URL_PATTERN = re.compile(r"https?://|www\.|\.com\b|\.in\b|\.ac\.in\b|site:", re.IGNORECASE)
+MAX_WORDS = 5  # DuckDuckGo returns little or nothing for longer queries
+
+URL_PATTERN = re.compile(r"https?://|www\.|\.(com|in|org|net|edu)\b|site:", re.IGNORECASE)
+
+# Company runs must not carry event or college wording (see step1_input.py).
+COMPANY_BANNED = re.compile(
+    r"\b(sponsor\w*|college|colleges|fest|fests|delegation|student|students)\b",
+    re.IGNORECASE,
+)
 
 
 def should_replan(usable: int, min_orgs: int, rounds_used: int, max_rounds: int) -> bool:
-    """Return True if we have fewer usable orgs than needed and still have rounds left."""
+    """True if usable orgs are below target and re-plan rounds remain."""
     return usable < min_orgs and rounds_used < max_rounds
 
 
-def validate_queries(candidates: List[str], used: List[str]) -> List[str]:
-    """Clean and filter candidate queries.
+def _category_desc(category: str) -> str:
+    """Company for Sponsor and Both runs, college society for College Delegation."""
+    return "college society" if category == "College Delegation" else "company"
 
-    Keeps up to ``MAX_NEW_QUERIES`` entries that satisfy word‑count and URL rules.
-    Logs each rejection at DEBUG level.
+
+def validate_queries(
+    candidates: Iterable[str],
+    used: Iterable[str],
+    banned: Optional[Pattern[str]] = None,
+) -> List[str]:
+    """Clean and filter candidate queries. Returns at most MAX_NEW_QUERIES.
+
+    Rules: 3 to 5 words, no URL-like text, no repeat of a used or kept query,
+    and no banned words when ``banned`` is given.
     """
     kept: List[str] = []
-    seen: set[str] = set()
-    used_lower = {u.lower() for u in used if isinstance(u, str)}
+    seen = {u.lower() for u in used if isinstance(u, str)}
+
     for raw in candidates:
         if not isinstance(raw, str):
             continue
-        # Normalise whitespace and case
         cleaned = " ".join(raw.split())
         lowered = cleaned.lower()
-        # Word count check
         word_count = len(lowered.split())
-        if word_count < MIN_WORDS or word_count > MAX_WORDS:
-            _logger.debug("reject query '%s': word count %d out of range", cleaned, word_count)
+
+        if not (MIN_WORDS <= word_count <= MAX_WORDS):
+            _log.debug("replan reject '%s': %d words", cleaned, word_count)
             continue
-        # URL pattern check
         if URL_PATTERN.search(lowered):
-            _logger.debug("reject query '%s': matches URL pattern", cleaned)
+            _log.debug("replan reject '%s': URL-like", cleaned)
             continue
-        # Duplicate against used list
-        if lowered in used_lower:
-            _logger.debug("reject query '%s': already used", cleaned)
+        if banned is not None and banned.search(cleaned):
+            _log.debug("replan reject '%s': banned word", cleaned)
             continue
-        # Duplicate within kept
         if lowered in seen:
-            _logger.debug("reject query '%s': duplicate in candidates", cleaned)
+            _log.debug("replan reject '%s': duplicate", cleaned)
             continue
+
         kept.append(cleaned)
         seen.add(lowered)
         if len(kept) >= MAX_NEW_QUERIES:
             break
+
     return kept
 
 
-def propose_queries(category: str, city: str | None, used: List[str], usable: int, min_orgs: int) -> List[str]:
-    """Ask Gemini for new queries and validate them.
-
-    Parameters
-    ----------
-    category: "Sponsor" or other.
-    city: optional city string.
-    used: list of already‑used query strings.
-    usable: number of usable orgs discovered so far.
-    min_orgs: target number of orgs.
-    """
-    category_desc = "company" if category == "Sponsor" else "college society"
+def propose_queries(
+    category: str,
+    city: Optional[str],
+    used: List[str],
+    usable: int,
+    min_orgs: int,
+) -> List[str]:
+    """Ask Gemini for new queries and validate them. Returns [] on failure."""
     prompt = REPLAN.format(
         category=category,
         city=city or "unknown",
         used="\n".join(used) if used else "none",
         found=usable,
         target=min_orgs,
-        category_desc=category_desc,
+        category_desc=_category_desc(category),
     )
-    result = ask(
-    NewQueries,
-    prompt,
-    tier="fast",
-    tag="s2_replan",
-    max_out=400,
-    )
+
+    result = ask(NewQueries, prompt, tier="fast", tag="s2_replan", max_out=400)
     if result is None:
-        _logger.warning("Gemini did not return new queries for replan")
+        _log.warning("replan: Gemini returned no queries")
         return []
-    return validate_queries(getattr(result, "queries", []), used)
+
+    banned = None if category == "College Delegation" else COMPANY_BANNED
+    return validate_queries(getattr(result, "queries", []), used, banned=banned)
+
 
 __all__ = ["should_replan", "validate_queries", "propose_queries"]

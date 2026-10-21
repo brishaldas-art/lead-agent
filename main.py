@@ -9,6 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from agent.step1_input import build_plan
+from agent.discovery import run_discovery
 
 # Load environment variables once at import time
 load_dotenv()
@@ -60,6 +61,7 @@ def main() -> int:
     else:
         print("  none")
 
+    
     query_cnt = len(plan.queries)
     print(f"Queries ({query_cnt}):")
     if query_cnt:
@@ -67,6 +69,18 @@ def main() -> int:
             print(f"  {i}. {q}")
     else:
         print("  none")
+
+    if args.offline:
+        print("Offline mode: skipping discovery.")
+        return 0
+
+    print("\nRunning discovery...")
+    records = run_discovery(plan)
+    print(f"\nOrganizations with usable pages: {len(records)}")
+    for rec in records:
+        org = rec["org"]
+        statuses = ", ".join(p["status"] for p in rec["pages"])
+        print(f"- {org.org_name} | {org.domain} | pages: {statuses}")
 
     return 0
 

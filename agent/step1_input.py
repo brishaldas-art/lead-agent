@@ -13,6 +13,9 @@ from agent.schemas import BrochureFactsOut, SearchIntentOut, SearchPlan
 
 _log = logging.getLogger("agent")
 
+MAX_QUERY_WORDS = 5   # DuckDuckGo returns little or nothing for longer queries
+MAX_QUERIES = 10
+
 HEADING_PAT = re.compile(
     r"^\s*(Our Sponsors|Our Past Sponsors|Past Sponsors|Previous Sponsors|"
     r"Past Partners|Participating Colleges)\s*$",
@@ -20,6 +23,39 @@ HEADING_PAT = re.compile(
 )
 NAME_PAT = re.compile(r"^[A-Z].{2,59}$")
 
+# ---------------------------------------------------------------------------
+# Query templates (code only, no LLM)
+# ---------------------------------------------------------------------------
+
+# Company runs (Sponsor and Both). Event and college words are never used here.
+_INDUSTRY_TEMPLATES = [
+    "{ind} companies in {place}",
+    "{ind} startups {place}",
+]
+_PLACE_TEMPLATES = [
+    "{place} technology companies",
+    "{place} IT services companies",
+    "{place} company CSR initiatives",
+    "{place} tech company careers",
+]
+
+# College runs (College Delegation only). College wording is expected here.
+_COLLEGE_TEMPLATES = [
+    "{place} engineering colleges",
+    "{place} college technical society",
+    "{place} college cultural committee",
+    "{place} university student council",
+]
+
+_COMPANY_BANNED = re.compile(
+    r"\b(sponsor\w*|college|colleges|fest|fests|delegation|student|students)\b",
+    re.IGNORECASE,
+)
+
+
+# ---------------------------------------------------------------------------
+# PDF helpers
+# ---------------------------------------------------------------------------
 
 def extract_pdf_text(path: str) -> Tuple[str, int]:
     """Return all page text joined by newlines, and the page count."""
@@ -71,8 +107,12 @@ def scan_headings(text: str) -> List[str]:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Plans
+# ---------------------------------------------------------------------------
+
 def plan_from_prompt(prompt: str) -> SearchPlan:
-    """Build a SearchPlan from a free-form user prompt using Gemini (fast tier)."""
+    """Build a SearchPlan from a free-form prompt using Gemini (fast tier)."""
     intent = ask(SearchIntentOut, INTENT.format(prompt=prompt), tier="fast", tag="s1_prompt")
     if intent is None:
         intent = SearchIntentOut(category="Both", city=None, industries=[], audience=None)
@@ -89,7 +129,7 @@ def plan_from_pdf(path: str) -> SearchPlan:
     text, pages = extract_pdf_text(path)
     facts: Optional[BrochureFactsOut] = None
     if is_scanned(text, pages):
-        _log.warning("Scanned PDF fallback not implemented yet: %s", path)
+        _log.warning("Scanned PDF: Gemini fallback not implemented, using regex seeds only: %s", path)
     else:
         facts = ask(BrochureFactsOut, BROCHURE.format(text=text[:40000]), tier="fast", tag="s1_brochure")
 
@@ -98,6 +138,7 @@ def plan_from_pdf(path: str) -> SearchPlan:
         candidates.extend(facts.mentioned_orgs)
     candidates.extend(scan_headings(text))
     seed_orgs = grounded(list(dict.fromkeys(candidates)), text)
+
     first_line = text.strip().splitlines()[0] if text.strip() else ""
     seed_orgs = [s for s in seed_orgs if s not in first_line]
 
@@ -110,34 +151,70 @@ def plan_from_pdf(path: str) -> SearchPlan:
     )
 
 
-def build_queries(plan: SearchPlan) -> SearchPlan:
-    """Fill plan.queries from code templates. No LLM, no URLs. Capped at 12."""
-    city = plan.city or "India"
-    theme = plan.theme or "college fest"
-    queries: List[str] = []
+# ---------------------------------------------------------------------------
+# Query builder
+# ---------------------------------------------------------------------------
 
-    if plan.category in ("Sponsor", "Both"):
-        for ind in plan.industries or ["technology"]:
-            queries.append(f"{ind} companies sponsor college fests {city}")
-        queries.append(f"{city} college fest sponsors")
-        for seed in plan.seed_orgs[:3]:
-            queries.append(f"{seed} CSR head")
-            queries.append(f"{seed} marketing head")
-
-    if plan.category in ("College Delegation", "Both"):
-        colleges = [s for s in plan.seed_orgs if any(t in s for t in ("College", "Institute", "University"))][:3]
-        if colleges:
-            queries.append(f"{city} engineering colleges technical society")
-            queries.append(f"{city} college cultural fest team")
-        for college in colleges:
-            queries.append(f"{college} student council")
-
-    final: List[str] = []
+def _clean_unique(queries: List[str]) -> List[str]:
+    """Collapse whitespace and drop duplicates, keeping order."""
+    out: List[str] = []
     for q in queries:
-        if q not in final:
-            final.append(q)
-    return plan.model_copy(update={"queries": final[:12]})
+        q = " ".join(q.split())
+        if q and q not in out:
+            out.append(q)
+    return out
 
+
+def _fits(query: str, banned: Optional[re.Pattern] = None) -> bool:
+    """True if the query is within the word limit and has no banned words."""
+    if len(query.split()) > MAX_QUERY_WORDS:
+        _log.info("query dropped (over %d words): %s", MAX_QUERY_WORDS, query)
+        return False
+    if banned is not None and banned.search(query):
+        _log.warning("query dropped (banned word for company run): %s", query)
+        return False
+    return True
+
+
+def build_queries(
+    category: str,
+    city: Optional[str],
+    industries: List[str],
+    theme: Optional[str],
+) -> List[str]:
+    """Build search queries from code templates. No LLM is used.
+
+    - College Delegation: college templates only.
+    - Sponsor, Both, or anything else: company templates built from the
+      industries and city. Event and college words are never added.
+    """
+    place = city or "India"
+
+    if category == "College Delegation":
+        queries = [t.format(place=place) for t in _COLLEGE_TEMPLATES]
+        cleaned = _clean_unique(queries)
+        return [q for q in cleaned if _fits(q)][:MAX_QUERIES]
+
+    inds = [i.strip() for i in industries if i and i.strip()] or ["technology"]
+
+    queries: List[str] = []
+    for t in _INDUSTRY_TEMPLATES:
+        for ind in inds[:2]:
+            queries.append(t.format(ind=ind, place=place))
+    for t in _PLACE_TEMPLATES:
+        queries.append(t.format(place=place))
+    if theme:
+        short_theme = " ".join(theme.split()[:2])  # keep long theme phrases from breaking the limit
+        queries.append(f"{short_theme} technology companies {place}")
+
+    cleaned = _clean_unique(queries)
+    kept = [q for q in cleaned if _fits(q, banned=_COMPANY_BANNED)]
+    return kept[:MAX_QUERIES]
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 def build_plan(prompt: Optional[str] = None, pdf_path: Optional[str] = None) -> SearchPlan:
     """Build the final Step 1 plan from a prompt, a PDF, or both."""
@@ -158,7 +235,11 @@ def build_plan(prompt: Optional[str] = None, pdf_path: Optional[str] = None) -> 
         merged = plan_from_pdf(pdf_path)
     else:
         merged = SearchPlan(source="prompt", category="Both", city=None)
-    return build_queries(merged)
+
+    queries = build_queries(merged.category, merged.city, merged.industries, merged.theme)
+    _log.info("step1 plan: category=%s city=%s industries=%s queries=%d",
+              merged.category, merged.city, merged.industries, len(queries))
+    return merged.model_copy(update={"queries": queries})
 
 
 __all__ = [

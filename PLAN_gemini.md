@@ -228,10 +228,13 @@ class BrochureFactsOut(BaseModel):
 
 # Internal
 class SearchPlan(BaseModel):
+    source: Literal["prompt", "pdf", "both"]
     category: Literal["Sponsor", "College Delegation", "Both"]
-    city: str | None
-    queries: list[str]               # 6-12 search strings
-    seed_orgs: list[str] = []        # grounded orgs lifted from the brochure
+    city: Optional[str]
+    industries: list[str] = []
+    theme: Optional[str] = None
+    queries: list[str] = []
+    seed_orgs: list[str] = []
 ```
 
 ### 1.6 Issues and Fixes

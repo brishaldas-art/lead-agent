@@ -82,10 +82,12 @@ def propose_queries(category: str, city: str | None, used: List[str], usable: in
         target=min_orgs,
         category_desc=category_desc,
     )
-    result: NewQueries | None = ask(
-        "gemini-1.5-flash",
-        prompt,
-        response_schema=NewQueries,
+    result = ask(
+    NewQueries,
+    prompt,
+    tier="fast",
+    tag="s2_replan",
+    max_out=400,
     )
     if result is None:
         _logger.warning("Gemini did not return new queries for replan")

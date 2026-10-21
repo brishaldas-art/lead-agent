@@ -45,3 +45,6 @@ class OrgCandidate(BaseModel):
     domain: str
     homepage: str
     discovered_via: str
+    
+class NewQueries(BaseModel):
+    queries: list[str]

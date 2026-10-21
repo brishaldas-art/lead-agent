@@ -45,3 +45,11 @@ CLASSIFY = (
     "Results:<<<{numbered_results}>>>\n"
     "For each result_id, output relevant (true or false), org_name exactly as written, category, and city if stated."
 )
+REPLAN = """Category: {category}. City: {city}.
+Queries already used (do not repeat):
+<<<
+{used}
+>>>
+Only {found} usable organizations were found so far (target {target}).
+Propose up to 4 new web search queries that would find more real {category_desc} organizations in {city}.
+Each query must be 3 to 8 words. No URLs, no quotes, no site: operators."""

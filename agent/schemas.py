@@ -37,3 +37,11 @@ class ClassifiedResult(BaseModel):
 
 class ClassifiedBatch(BaseModel):
     results: list[ClassifiedResult]
+
+class OrgCandidate(BaseModel):
+    org_name: str
+    category: Literal["Sponsor", "College Delegation"]
+    city: str | None
+    domain: str
+    homepage: str
+    discovered_via: str

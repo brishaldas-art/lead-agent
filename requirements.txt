@@ -1,0 +1,8 @@
+google-genai
+pydantic>=2
+pymupdf
+python-dotenv
+typer
+rich
+rapidfuzz
+diskcache

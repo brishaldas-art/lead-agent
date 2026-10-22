@@ -23,7 +23,7 @@ logger = logging.getLogger("agent.discovery")
 MIN_ORGS: int = int(os.getenv("MIN_ORGS", "15"))
 MAX_ROUNDS: int = int(os.getenv("REPLAN_ROUNDS", "2"))
 MAX_ORGS: int = int(os.getenv("MAX_ORGS", "25"))
-MAX_PAGES_PER_ORG: int = 3
+MAX_PAGES_PER_ORG: int = int(os.getenv("MAX_PAGES_PER_ORG", "3"))
 SEARCH_DELAY_SECONDS: float = 1.5
 TRACE_PATH: Path = Path("outputs/agent_trace.log")
 
@@ -81,13 +81,15 @@ def _page_from_fetch(result: dict) -> dict:
         "url": url,
         "page_type": _page_type(url),
         "status": result.get("status", "dead"),
+        "http_status": result.get("http_status"),
+        "reason": result.get("reason", "") or "",
         "text": result.get("text", "") or "",
         "html": result.get("html", "") or "",
     }
 
 
-def _snippet_page(org, raw: list[dict]) -> dict | None:
-    """Use the first search result on the org's own domain as weak evidence."""
+def _snippet_page(org, raw: list[dict], failed_home: dict | None = None) -> dict | None:
+    """Use a same-domain search result as weak evidence after fetch failure."""
     for result in raw:
         url = result.get("url", "")
         host = _host(url)
@@ -97,6 +99,8 @@ def _snippet_page(org, raw: list[dict]) -> dict | None:
                 "url": url,
                 "page_type": "other",
                 "status": "search_snippet",
+                "http_status": (failed_home or {}).get("http_status"),
+                "reason": (failed_home or {}).get("reason", "") or "",
                 "text": text,
                 "html": "",
             }
@@ -128,7 +132,7 @@ def collect_pages(org, fetch_fn, raw: list[dict]) -> list[dict]:
                 pages.append(_page_from_fetch(result))
 
     if not pages:
-        snippet = _snippet_page(org, raw)
+        snippet = _snippet_page(org, raw, failed_home=home)
         if snippet:
             logger.info("snippet fallback used for %s", org.org_name)
             pages.append(snippet)

@@ -11,6 +11,9 @@ from rapidfuzz import fuzz
 from .schemas import OrgCandidate
 
 _logger = logging.getLogger(__name__)
+# Use tldextract's bundled suffix snapshot. Avoid an unplanned network request
+# during a small run; the bundled list is sufficient for normal domain parsing.
+_extract_domain = tldextract.TLDExtract(suffix_list_urls=())
 
 NOISE_SUFFIXES = [
     "csr",
@@ -71,7 +74,7 @@ def build_orgs(classified: List[Dict], discovered_via: str = "search") -> List[O
         if not url:
             _logger.warning("Skipping org with missing URL: %s", item.get("org_name"))
             continue
-        ext = tldextract.extract(url)
+        ext = _extract_domain(url)
         if not ext.suffix:
             _logger.warning("Skipping URL without suffix: %s", url)
             continue

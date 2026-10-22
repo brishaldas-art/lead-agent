@@ -31,7 +31,8 @@ def _get(url: str) -> Optional[httpx.Response]:
             resp = client.get(url)
             if resp.status_code >= 400:
                 _logger.warning("GET %s returned status %s", url, resp.status_code)
-                return None
+            # Preserve error responses so the caller can report whether a page
+            # was blocked (403), missing (404), rate-limited (429), etc.
             return resp
     except httpx.HTTPError as exc:
         _logger.warning("GET %s failed: %s", url, type(exc).__name__)
@@ -89,39 +90,72 @@ def _wayback(url: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def fetch_page(url: str) -> Dict[str, Optional[str]]:
-    """Fetch *url* with fallbacks; never raises, always returns a result dict."""
+    """Fetch *url* with fallbacks; preserve the final HTTP status for review."""
+    last_http_status: Optional[int] = None
     try:
-        # Primary attempt
-        resp = _get(url)
-        if resp and resp.text:
+        # Direct request, then simple canonical URL alternatives.
+        for candidate in [url, *alternate_urls(url)]:
+            resp = _get(candidate)
+            if resp is None:
+                continue
+            last_http_status = resp.status_code
+            if resp.status_code >= 400 or not resp.text:
+                continue
             final_url = str(resp.url)
             html = resp.text
             text = _extract(html, final_url)
             reason = "short text" if len(text) < 300 else ""
-            return {"status": "ok", "final_url": final_url, "text": text, "html": html, "reason": reason}
-        # Alternate URLs
-        for alt in alternate_urls(url):
-            resp = _get(alt)
-            if resp and resp.text:
-                final_url = str(resp.url)
-                html = resp.text
-                text = _extract(html, final_url)
-                reason = "short text" if len(text) < 300 else ""
-                return {"status": "ok", "final_url": final_url, "text": text, "html": html, "reason": reason}
-        # Wayback fallback
+            return {
+                "status": "ok",
+                "final_url": final_url,
+                "text": text,
+                "html": html,
+                "reason": reason,
+                "http_status": resp.status_code,
+            }
+
+        # Historical public copy, if one exists. This is not a live-page bypass.
         wb = _wayback(url)
         if wb:
             resp = _get(wb)
-            if resp and resp.text:
-                final_url = str(resp.url)
-                html = resp.text
-                text = _extract(html, final_url)
-                reason = "short text" if len(text) < 300 else ""
-                return {"status": "wayback", "final_url": final_url, "text": text, "html": html, "reason": reason}
-        # All attempts failed
-        return {"status": "dead", "final_url": None, "text": "", "html": "", "reason": "all fallbacks failed"}
+            if resp is not None:
+                last_http_status = resp.status_code
+                if resp.status_code < 400 and resp.text:
+                    final_url = str(resp.url)
+                    html = resp.text
+                    text = _extract(html, final_url)
+                    reason = "short text" if len(text) < 300 else ""
+                    return {
+                        "status": "wayback",
+                        "final_url": final_url,
+                        "text": text,
+                        "html": html,
+                        "reason": reason,
+                        "http_status": resp.status_code,
+                    }
+
+        reason = (
+            f"HTTP {last_http_status}; direct page unavailable"
+            if last_http_status is not None
+            else "all fetch attempts failed"
+        )
+        return {
+            "status": "dead",
+            "final_url": None,
+            "text": "",
+            "html": "",
+            "reason": reason,
+            "http_status": last_http_status,
+        }
     except Exception as exc:
         _logger.warning("fetch_page exception: %s", type(exc).__name__)
-        return {"status": "dead", "final_url": None, "text": "", "html": "", "reason": type(exc).__name__}
+        return {
+            "status": "dead",
+            "final_url": None,
+            "text": "",
+            "html": "",
+            "reason": type(exc).__name__,
+            "http_status": last_http_status,
+        }
 
 __all__ = ["fetch_page"]

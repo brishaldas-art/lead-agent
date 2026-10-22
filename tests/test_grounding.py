@@ -84,6 +84,25 @@ def test_csr_keyword_does_not_count_as_direct_sponsorship():
     assert summary["direct_sponsorship_evidence_urls"] == []
     assert summary["related_csr_community_evidence_urls"] == [sources[0]["url"]]
 
+    social_only = [{
+        "url": "https://www.linkedin.com/company/jupiter-international/",
+        "title": "Jupiter International | LinkedIn",
+        "snippet": "Kolkata company sponsoring local college fests.",
+    }]
+    summary = _verification_summary(org, [], social_only, [], "Kolkata")
+    assert summary["status"] == "location_unverified"
+    assert summary["direct_sponsorship_evidence_urls"] == []
+    assert summary["social_discovery_evidence_count"] == 1
+
+    direct_source = {
+        "url": "https://jil-jupiter.com/community",
+        "title": "Community partnerships",
+        "snippet": "Kolkata office; Jupiter sponsors local college fests.",
+    }
+    summary = _verification_summary(org, [direct_source], [], [], "Kolkata")
+    assert summary["status"] == "local_presence_and_direct_sponsorship_evidence"
+    assert summary["direct_sponsorship_evidence_urls"] == [direct_source["url"]]
+
 
 if __name__ == "__main__":
     test_search_ad_redirect_is_not_a_lead_domain()

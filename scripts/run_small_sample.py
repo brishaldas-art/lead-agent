@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -115,59 +114,17 @@ def _short_result(item: dict) -> dict:
 
 
 def _verification_summary(org, selected_results: list[dict], social_matches: list[dict], pages: list[dict], city: str) -> dict:
-    """Report local and sponsor signals with URLs; never infer either signal."""
-    evidence = []
-    for row in selected_results:
-        host = (urlparse(row.get("url", "")).hostname or "").lower()
-        if host == org.domain or host.endswith("." + org.domain):
-            evidence.append({"url": row.get("url", ""), "text": f"{row.get('title', '')} {row.get('snippet', '')}"})
-    for row in social_matches:
-        evidence.append({"url": row.get("url", ""), "text": f"{row.get('title', '')} {row.get('snippet', '')}"})
-    for page in pages:
-        evidence.append({"url": page.get("url", ""), "text": page.get("text", "") or ""})
+    """Summarize company-site evidence; retain social matches as discovery-only."""
+    from agent.evidence import summarize_official_evidence
 
-    location_sources = []
-    direct_sponsor_sources = []
-    related_signal_sources = []
-    direct_sponsor_pattern = re.compile(
-        r"\b(sponsorships?|sponsored\s+(?:events?|programs?|students?|colleges?)|"
-        r"sponsor(?:s|ed|ing)?\s+(?:events?|programs?|students?|colleges?))\b",
-        re.I,
+    summary = summarize_official_evidence(
+        org.domain,
+        selected_results,
+        pages,
+        city,
     )
-    related_signal_pattern = re.compile(
-        r"\b(csr|esg|education|student(?:s)?|college|community|grant|donation|"
-        r"funding|scholarship|outreach|youth)\b",
-        re.I,
-    )
-    city_pattern = re.compile(rf"(?<!\w){re.escape(city.strip())}(?!\w)", re.I) if city else None
-    for item in evidence:
-        text = item["text"]
-        if city_pattern and city_pattern.search(text):
-            location_sources.append(item["url"])
-        if direct_sponsor_pattern.search(text):
-            direct_sponsor_sources.append(item["url"])
-        if related_signal_pattern.search(text):
-            related_signal_sources.append(item["url"])
-
-    location_sources = list(dict.fromkeys(x for x in location_sources if x))
-    direct_sponsor_sources = list(dict.fromkeys(x for x in direct_sponsor_sources if x))
-    related_signal_sources = list(dict.fromkeys(x for x in related_signal_sources if x))
-    if location_sources and direct_sponsor_sources:
-        status = "local_presence_and_direct_sponsorship_evidence"
-    elif location_sources and related_signal_sources:
-        status = "local_presence_and_related_csr_signal_only"
-    elif location_sources:
-        status = "local_presence_verified_no_sponsor_signal"
-    else:
-        status = "location_unverified"
-    return {
-        "status": status,
-        "target_city": city,
-        "location_evidence_urls": location_sources,
-        "direct_sponsorship_evidence_urls": direct_sponsor_sources,
-        "related_csr_community_evidence_urls": related_signal_sources,
-        "warning": "CSR/community keywords are only research signals. Sponsorship willingness requires direct evidence and human review.",
-    }
+    summary["social_discovery_evidence_count"] = len(social_matches)
+    return summary
 
 
 def main() -> int:
@@ -342,6 +299,7 @@ def main() -> int:
     records = run_discovery(
         classification_plan,
         search_fn=lambda _query: selected_results,
+        enrich=False,  # The bounded runner already performed and logged its enrichment.
     )
     lookup_drop_reasons = Counter()
     for rows in lookup_log.values():

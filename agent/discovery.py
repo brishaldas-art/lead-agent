@@ -17,6 +17,16 @@ from agent.orgs import build_orgs
 from agent.crawl import score_links
 from agent.fetch import fetch_page
 from agent.replan import should_replan, propose_queries
+from agent.evidence import (
+    canonical_url_key,
+    domain_matches_name,
+    instagram_company_name,
+    is_social_url,
+    linkedin_company_name,
+    listicle_names,
+    result_matches_name,
+    summarize_official_evidence,
+)
 
 logger = logging.getLogger("agent.discovery")
 
@@ -73,6 +83,112 @@ def _safe_fetch(fetch_fn, url: str) -> dict:
     except Exception as exc:
         logger.warning("fetch raised for %s: %s", url, exc)
         return {"status": "dead", "reason": str(exc)}
+
+
+def _enrich_search_results(plan, primary_results: list[dict], search_fn):
+    """Use social/list snippets only to seed bounded company-name searches.
+
+    Social and listicle pages are returned separately as discovery evidence;
+    only name-matched, brand-consistent non-social search results are candidates
+    for classification and crawling.
+    """
+    if getattr(plan, "category", "") not in ("Sponsor", "Both"):
+        return [], {}
+
+    industries = getattr(plan, "industries", None) or []
+    industry = str(industries[0]) if industries else "companies"
+    city = str(getattr(plan, "city", None) or "India")
+    social_queries = [
+        f"site:linkedin.com/company {industry} {city}",
+        f"site:instagram.com {industry} {city}",
+    ]
+    social_rows: list[dict] = []
+    for query in social_queries:
+        try:
+            rows = search_fn(query) or []
+        except Exception as exc:
+            logger.warning("social discovery search failed for %r: %s", query, exc)
+            continue
+        social_rows.extend(row for row in rows if is_social_url(row.get("url", "")))
+
+    _kept, dropped = filter_results(primary_results)
+    seeds: list[tuple[str, str, dict]] = []
+
+    def add_seed(name: str | None, source: str, evidence: dict) -> bool:
+        if not name:
+            return False
+        if any(result_matches_name(name, {"title": existing, "snippet": ""}, threshold=85)
+               for existing, _source, _evidence in seeds):
+            return False
+        seeds.append((name, source, evidence))
+        return True
+
+    linkedin_count = 0
+    for row in social_rows:
+        if linkedin_count >= 3:
+            break
+        name = linkedin_company_name(row)
+        if add_seed(name, "linkedin_company_result", row):
+            linkedin_count += 1
+
+    instagram_count = 0
+    for row in social_rows:
+        if instagram_count >= 2:
+            break
+        name = instagram_company_name(row)
+        if add_seed(name, "instagram_profile_or_post_result", row):
+            instagram_count += 1
+
+    listicle_count = 0
+    for row in dropped:
+        if row.get("drop_reason") != "listicle":
+            continue
+        for name in listicle_names(row.get("snippet", "")):
+            if add_seed(name, "listicle_snippet", row):
+                listicle_count += 1
+            if listicle_count >= 2:
+                break
+        if listicle_count >= 2:
+            break
+
+    extra_results: list[dict] = []
+    seed_evidence: dict[str, list[dict]] = {}
+    seen_urls: set[str] = set()
+    for name, source, evidence in seeds[:7]:
+        seed_evidence[name] = [{
+            "evidence_type": "public_social_discovery_only" if source.startswith(("linkedin", "instagram")) else "listicle_discovery_only",
+            "source": evidence.get("url", ""),
+            "title": evidence.get("title", ""),
+            "snippet": evidence.get("snippet", "") or "",
+        }]
+        query = f'"{name}" {city} official'
+        try:
+            rows = search_fn(query) or []
+        except Exception as exc:
+            logger.warning("name resolution search failed for %r: %s", query, exc)
+            continue
+        kept, _dropped = filter_results(rows)
+        matches = [
+            row for row in kept
+            if result_matches_name(name, row)
+            and domain_matches_name(name, row.get("url", ""))
+        ]
+        for row in matches[:1]:
+            key = canonical_url_key(row.get("url", ""))
+            if not key or key in seen_urls:
+                continue
+            seen_urls.add(key)
+            extra_results.append({
+                **row,
+                "_discovery_seed_name": name,
+                "_discovery_seed_source": source,
+            })
+
+    logger.info(
+        "name enrichment: social=%d seeds=%d verified_non_social_results=%d",
+        len(social_rows), len(seeds[:7]), len(extra_results),
+    )
+    return extra_results, seed_evidence
 
 
 def _page_from_fetch(result: dict) -> dict:
@@ -148,6 +264,7 @@ def run_discovery(
     fetch_fn=None,
     classify_fn=None,
     replan_fn=None,
+    enrich: bool = True,
 ) -> list[dict]:
     """Run the discovery loop for a SearchPlan.
 
@@ -169,6 +286,7 @@ def run_discovery(
     raw_all: list[dict] = []
     seen_domains: set[str] = set()
     records: list[dict] = []
+    seed_evidence: dict[str, list[dict]] = {}
     rounds = 0
 
     while True:
@@ -186,9 +304,30 @@ def run_discovery(
             round_raw.extend(results)
             logger.info("query %r -> %d results", query, len(results))
 
+        enrichment_results: list[dict] = []
+        if enrich and rounds == 0:
+            enrichment_results, seed_evidence = _enrich_search_results(
+                plan, round_raw, search_fn
+            )
+            # Exact-name/domain-checked results take priority, but social and
+            # listicle snippets never enter the classifier or page crawler.
+            round_raw = [*enrichment_results, *round_raw]
+
         raw_all.extend(round_raw)
 
         kept, dropped = filter_results(round_raw)
+        if enrichment_results:
+            unique_kept = []
+            seen_result_urls = set()
+            for row in kept:
+                key = canonical_url_key(row.get("url", ""))
+                if not key or key in seen_result_urls:
+                    continue
+                seen_result_urls.add(key)
+                unique_kept.append(row)
+                if len(unique_kept) >= 30:
+                    break
+            kept = unique_kept
         logger.info("filter: kept=%d dropped=%d", len(kept), len(dropped))
 
         try:
@@ -213,7 +352,25 @@ def run_discovery(
             seen_domains.add(org.domain)
             pages = collect_pages(org, fetch_fn, raw_all)
             if pages:
-                records.append({"org": org, "pages": pages})
+                matched_evidence = []
+                for seed_name, sources in seed_evidence.items():
+                    if result_matches_name(
+                        seed_name,
+                        {"title": org.org_name, "snippet": ""},
+                        threshold=85,
+                    ):
+                        matched_evidence.extend(sources)
+                records.append({
+                    "org": org,
+                    "pages": pages,
+                    "verification": summarize_official_evidence(
+                        org.domain,
+                        raw_all,
+                        pages,
+                        city,
+                    ),
+                    "discovery_evidence": matched_evidence,
+                })
             else:
                 logger.info("dropped %s: no usable pages", org.org_name)
 

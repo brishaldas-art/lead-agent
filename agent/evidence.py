@@ -112,3 +112,67 @@ def social_matches_name(name: str, result: dict, threshold: int = 78) -> bool:
     title = re.sub(r"\s*(?:\||[-–—])\s*(?:linkedin|instagram).*$", "", result.get("title", ""), flags=re.I)
     evidence = f"{title} {result.get('snippet', '')}".lower()
     return fuzz.token_set_ratio(name.lower(), evidence) >= threshold
+
+
+def summarize_official_evidence(domain: str, search_results: list[dict], pages: list[dict], city: str | None) -> dict:
+    """Report local, sponsorship, and related-CSR signals from company-domain evidence only."""
+    evidence = []
+    for row in search_results:
+        url = row.get("url", "")
+        host = (urlparse(url).hostname or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if host == domain or host.endswith("." + domain):
+            evidence.append({
+                "url": url,
+                "text": f"{row.get('title', '')} {row.get('snippet', '')}",
+            })
+    for page in pages:
+        url = page.get("url", "")
+        host = (urlparse(url).hostname or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if host == domain or host.endswith("." + domain):
+            evidence.append({"url": url, "text": page.get("text", "") or ""})
+
+    direct_sponsor_pattern = re.compile(
+        r"\b(sponsorships?|sponsored\s+(?:events?|programs?|students?|colleges?|fests?)|"
+        r"sponsor(?:s|ed|ing)?\s+(?:the\s+)?(?:(?:college|school|university)\s+)?"
+        r"(?:events?|programs?|students?|colleges?|fests?|festivals?))\b",
+        re.I,
+    )
+    related_signal_pattern = re.compile(
+        r"\b(csr|esg|education|student(?:s)?|college|community|grant|donation|"
+        r"funding|scholarship|outreach|youth)\b",
+        re.I,
+    )
+    city_pattern = re.compile(rf"(?<!\w){re.escape(city.strip())}(?!\w)", re.I) if city else None
+    location_sources, direct_sponsor_sources, related_signal_sources = [], [], []
+    for item in evidence:
+        text = item["text"]
+        if city_pattern and city_pattern.search(text):
+            location_sources.append(item["url"])
+        if direct_sponsor_pattern.search(text):
+            direct_sponsor_sources.append(item["url"])
+        if related_signal_pattern.search(text):
+            related_signal_sources.append(item["url"])
+
+    location_sources = list(dict.fromkeys(url for url in location_sources if url))
+    direct_sponsor_sources = list(dict.fromkeys(url for url in direct_sponsor_sources if url))
+    related_signal_sources = list(dict.fromkeys(url for url in related_signal_sources if url))
+    if location_sources and direct_sponsor_sources:
+        status = "local_presence_and_direct_sponsorship_evidence"
+    elif location_sources and related_signal_sources:
+        status = "local_presence_and_related_csr_signal_only"
+    elif location_sources:
+        status = "local_presence_verified_no_sponsor_signal"
+    else:
+        status = "location_unverified"
+    return {
+        "status": status,
+        "target_city": city,
+        "location_evidence_urls": location_sources,
+        "direct_sponsorship_evidence_urls": direct_sponsor_sources,
+        "related_csr_community_evidence_urls": related_signal_sources,
+        "warning": "Only company-domain evidence is counted. CSR/community keywords are research signals, not proof of sponsorship willingness; human review is required.",
+    }

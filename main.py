@@ -81,6 +81,25 @@ def main() -> int:
         org = rec["org"]
         statuses = ", ".join(p["status"] for p in rec["pages"])
         print(f"- {org.org_name} | {org.domain} | pages: {statuses}")
+        verification = rec.get("verification", {})
+        if verification:
+            print(f"  Evidence check: {verification['status']}")
+            for label, key in (
+                ("Local-presence evidence", "location_evidence_urls"),
+                ("Direct sponsorship evidence", "direct_sponsorship_evidence_urls"),
+                ("Related CSR/community signals (not sponsorship)", "related_csr_community_evidence_urls"),
+            ):
+                for url in verification.get(key, []):
+                    print(f"    - {label}: {url}")
+        discovery_evidence = rec.get("discovery_evidence", [])
+        if discovery_evidence:
+            print("  Discovery-only social/list evidence (not official-site proof):")
+            for item in discovery_evidence:
+                print(f"    - {item['evidence_type']}: {item['source']}")
+                if item.get("title"):
+                    print(f"      {item['title']}")
+                if item.get("snippet"):
+                    print(f"      {item['snippet'][:240]}")
 
     return 0
 

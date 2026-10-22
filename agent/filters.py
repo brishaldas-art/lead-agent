@@ -70,16 +70,16 @@ BLOCKED_EXTENSIONS = (
 LISTICLE_PATTERNS: List[re.Pattern] = [
     re.compile(r"top \d+", re.I),
     re.compile(r"best \d+", re.I),
-    re.compile(r"\\bbest\\b.*\\bin\\b", re.I),
-    re.compile(r"\\blist of\\b", re.I),
-    re.compile(r"\\bdirectory\\b", re.I),
+    re.compile(r"\bbest\b.*\bin\b", re.I),
+    re.compile(r"\blist of\b", re.I),
+    re.compile(r"\bdirectory\b", re.I),
     re.compile(r"companies in", re.I),
-    re.compile(r"\\bvs\\b", re.I),
-    re.compile(r"\\breviews?\\b", re.I),
+    re.compile(r"\bvs\b", re.I),
+    re.compile(r"\breviews?\b", re.I),
 ]
 
 # Separate directory title check (different drop reason)
-DIRECTORY_PATTERN = re.compile(r"\\bdirectory\\b", re.I)
+DIRECTORY_PATTERN = re.compile(r"\bdirectory\b", re.I)
 
 _logger = __import__("logging").getLogger("agent")
 

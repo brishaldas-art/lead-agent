@@ -34,4 +34,7 @@ for item in out:
     print(item["org"].org_name, item["org"].domain, [(p["status"], p["url"]) for p in item["pages"]])
 assert len(out) == 1
 assert out[0]["pages"][0]["status"] == "search_snippet"
+assert out[0]["verification"]["status"] == "local_presence_and_direct_sponsorship_evidence"
+assert out[0]["verification"]["direct_sponsorship_evidence_urls"] == ["https://www.acmesystems.in/"]
+assert out[0]["discovery_evidence"] == []
 print("discovery tests passed")

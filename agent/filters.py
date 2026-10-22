@@ -14,6 +14,14 @@ from typing import List, Dict, Tuple
 BLOCKED_DOMAINS: set[str] = {
     "linkedin.com",
     "facebook.com",
+    # Search/ad redirectors are not organization websites. In particular,
+    # SERP ad click URLs must not become the candidate's root domain.
+    "bing.com",
+    "google.com",
+    "duckduckgo.com",
+    "search.yahoo.com",
+    "doubleclick.net",
+    "googleadservices.com",
     "instagram.com",
     "twitter.com",
     "x.com",

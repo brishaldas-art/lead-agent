@@ -3,6 +3,7 @@ Ensures Gemini never supplies URLs; every org name is grounded against the origi
 """
 
 import logging
+import re
 from typing import List, Dict
 
 from rapidfuzz import fuzz
@@ -23,6 +24,13 @@ def _truncate(text: str, limit: int = 200) -> str:
         return ""
     single_line = " ".join(text.splitlines())
     return single_line[:limit]
+
+
+def _mentions_location(location: str | None, evidence: str) -> bool:
+    """Only accept a location when it is literally present in the evidence."""
+    if not location:
+        return False
+    return re.search(rf"(?<!\w){re.escape(location.strip())}(?!\w)", evidence, re.I) is not None
 
 
 def classify_results(results: List[Dict], category: str, city: str | None) -> List[Dict]:
@@ -79,10 +87,15 @@ def classify_results(results: List[Dict], category: str, city: str | None) -> Li
             combined = f"{original.get('title', '')} {original.get('snippet', '')}".lower()
             if fuzz.partial_ratio(res.org_name.lower(), combined) < 80:
                 continue
+            # Do not let the query's target city become an ungrounded claim.
+            # Keep the requested city only when the result title/snippet states it.
+            verified_city = city if _mentions_location(city, combined) else None
+            if city is None and _mentions_location(res.city, combined):
+                verified_city = res.city
             output_item = {
                 "org_name": res.org_name,
                 "category": res.category,
-                "city": res.city if res.city is not None else city,
+                "city": verified_city,
                 "url": original.get("url", ""),
                 "title": original.get("title", ""),
                 "snippet": original.get("snippet", ""),

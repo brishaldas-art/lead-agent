@@ -72,6 +72,23 @@ def _extract(html: str, url: str) -> str:
         return ""
 
 
+def _quality_reason(text: str) -> str:
+    """Flag very short or obvious template-placeholder text for review."""
+    reasons = []
+    if len(text) < 300:
+        reasons.append("short text")
+    lowered = text.lower()
+    placeholder_markers = (
+        "lorem ipsum",
+        "dolore magna aliqua",
+        "excepteur sint occaecat",
+        "sagittis dia facilisis",
+    )
+    if any(marker in lowered for marker in placeholder_markers):
+        reasons.append("placeholder text detected")
+    return "; ".join(reasons)
+
+
 def _wayback(url: str) -> Optional[str]:
     """Return a Wayback Machine snapshot URL if available, else None."""
     api = f"https://archive.org/wayback/available?url={url}"
@@ -104,7 +121,7 @@ def fetch_page(url: str) -> Dict[str, Optional[str]]:
             final_url = str(resp.url)
             html = resp.text
             text = _extract(html, final_url)
-            reason = "short text" if len(text) < 300 else ""
+            reason = _quality_reason(text)
             return {
                 "status": "ok",
                 "final_url": final_url,
@@ -124,7 +141,7 @@ def fetch_page(url: str) -> Dict[str, Optional[str]]:
                     final_url = str(resp.url)
                     html = resp.text
                     text = _extract(html, final_url)
-                    reason = "short text" if len(text) < 300 else ""
+                    reason = _quality_reason(text)
                     return {
                         "status": "wayback",
                         "final_url": final_url,

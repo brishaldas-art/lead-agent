@@ -43,7 +43,8 @@ CLASSIFY = (
     "Category: {category}\n"
     "City: {city}\n"
     "Results:<<<{numbered_results}>>>\n"
-    "For each result_id, output relevant (true or false), org_name exactly as written, category, and city if stated."
+    "For each result_id, output relevant (true or false), org_name exactly as written, category, and city only if explicitly stated in that result's title or snippet. "
+    "Do not infer a company's location from the search query or from general knowledge; otherwise set city to null."
 )
 REPLAN = """Category: {category}. City: {city}.
 Queries already used (do not repeat):

@@ -74,6 +74,18 @@ Running with no arguments prints a usage message and exits with code 1.
 
 The program prints the plan (source, category, city, theme, industries, seed organizations and queries), then the discovery results (organizations found, with their homepage and whether they have a usable fetched page).
 
+### Low-token, evidence-focused sample
+
+To search one industry and city while allowing at most one Gemini classification call:
+
+```powershell
+python -m scripts.run_small_sample --city "Kolkata" --industry "renewable energy"
+```
+
+This runs up to 3 broad searches, 2 public social searches, and up to 5 exact-name lookups seeded from public LinkedIn company snippets or names explicitly present in list-result snippets. Social URLs are never treated as organization websites; list-result snippets only seed a separate company-name lookup. At most 30 non-social results are classified in one batch; output is capped at 3 organizations and 2 pages per organization. It writes evidence, verification flags, status codes, and token usage to `outputs/small_sample.json`.
+
+The corresponding research brief is in `data/sponsor_search_brief.txt`. Location and sponsor-related signals are reported only when found in evidence; absence of a signal is not proof that an organization is unsuitable.
+
 ## How it works
 
 ### Part 1: Input processing

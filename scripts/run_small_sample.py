@@ -6,9 +6,10 @@ Preferred low-token mode (one Gemini call maximum):
 Prompt mode uses one extra Step 1 Gemini call:
     python scripts/run_small_sample.py --prompt "Find renewable energy companies in Kolkata"
 
-The normal search uses at most one query (8 DDGS results), classifies only those
-results in one batch, considers at most 3 organizations, and fetches at most 2
-pages per organization. Optional LinkedIn/Instagram searches do not go to Gemini.
+The normal search uses at most three queries (24 DDGS results total), sends
+those results in at most one classification batch, considers at most 3
+organizations, and fetches at most 2 pages per organization. Optional
+LinkedIn/Instagram searches do not go to Gemini.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import argparse
 import json
 import os
 import sys
+from collections import Counter
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -79,6 +81,23 @@ def _social_queries(industry: str, city: str) -> list[str]:
     ]
 
 
+def _sample_query_set(primary: list[str], category: str, industry: str, city: str) -> list[str]:
+    """Add narrow official-site queries to reduce directory/listicle dominance."""
+    queries = list(primary)
+    if category in ("Sponsor", "Both"):
+        candidates = [
+            f"{industry} company {city} official",
+            f"{city} {industry} company",
+        ]
+        for query in candidates:
+            query = " ".join(query.split())
+            if len(query.split()) <= 5 and query not in queries:
+                queries.append(query)
+            if len(queries) >= 3:
+                break
+    return queries[:3]
+
+
 def _is_social(url: str) -> bool:
     host = (urlparse(url).hostname or "").lower()
     return any(host == d or host.endswith("." + d) for d in ("linkedin.com", "instagram.com"))
@@ -108,6 +127,7 @@ def main() -> int:
     from agent.search import run_query
     from agent.step1_input import build_plan, build_queries
     from agent.discovery import run_discovery
+    from agent.filters import filter_results
     from agent.gemini_client import BUDGET
 
     if args.prompt:
@@ -138,9 +158,13 @@ def main() -> int:
         print("Step 1 produced no search query; nothing to run.", file=sys.stderr)
         return 2
 
+    plan = plan.model_copy(update={
+        "queries": _sample_query_set(plan.queries[:1], plan.category, industry, city)
+    })
+
     print("Small sample limits:")
-    print(f"  Search queries sent to classification: {len(plan.queries)}")
-    print("  Search results per query: at most 8")
+    print(f"  Search queries sent to classification: {len(plan.queries)} (max 24 results total)")
+    print("  Search results per query: at most 8; classification is one batch")
     print(f"  Maximum Gemini calls this run: {os.environ['MAX_CALLS_PER_RUN']}")
     print(f"  Maximum organizations/pages: {args.max_orgs}/{args.max_pages}")
     print(f"  Query: {plan.queries[0]}")
@@ -162,6 +186,10 @@ def main() -> int:
             rows = run_query(query) or []
             # Only retain results actually hosted by LinkedIn or Instagram.
             social_log[query] = [r for r in rows if _is_social(r.get("url", ""))]
+
+    all_main_results = [row for rows in search_log.values() for row in rows]
+    eligible_results, dropped_results = filter_results(all_main_results)
+    drop_reasons = dict(Counter(row.get("drop_reason", "unknown") for row in dropped_results))
 
     serialized_records = []
     for record in records:
@@ -205,6 +233,16 @@ def main() -> int:
             query: [_short_result(r) for r in rows]
             for query, rows in social_log.items()
         },
+        "diagnostics": {
+            "main_search_results": len(all_main_results),
+            "eligible_after_filters": len(eligible_results),
+            "filter_drop_reasons": drop_reasons,
+            "offline_mode": os.getenv("OFFLINE", "0") == "1",
+            "gemini_key_configured": bool(
+                os.getenv("GEMINI_API_KEY")
+                and not os.getenv("GEMINI_API_KEY", "").startswith("paste_")
+            ),
+        },
         "organizations": serialized_records,
         "gemini_usage": {
             "calls": BUDGET.run_calls,
@@ -220,8 +258,15 @@ def main() -> int:
     out_path.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"\nWrote {out_path.relative_to(ROOT) if out_path.is_relative_to(ROOT) else out_path}")
+    print(f"Main search results: {len(all_main_results)}; eligible after filters: {len(eligible_results)}")
+    print(f"Filter drop reasons: {drop_reasons}")
     print(f"Organizations with usable evidence: {len(serialized_records)}")
     print(f"Gemini calls used: {BUDGET.run_calls}; cached answers: {BUDGET.cache_hits}")
+    if not eligible_results:
+        print("No classification call was needed: all main-search results were filtered out.")
+    elif BUDGET.run_calls == 0 and BUDGET.cache_hits == 0:
+        print("Eligible results exist, but Gemini returned no cached or successful answer.")
+        print("Check OFFLINE=0, that GEMINI_API_KEY is set, and the agent logs for API errors.")
     print("Share this JSON file and the terminal output for review.")
     return 0
 

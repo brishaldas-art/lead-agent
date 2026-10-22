@@ -119,6 +119,23 @@ def main() -> int:
         f"snippet fallbacks used: {people_result.fallback_searches}"
     )
 
+    from agent.step4_contacts import verify_contacts
+
+    print("\nRunning Step 4: code-only contact verification...")
+    contact_result = verify_contacts(people_result, records)
+    print(f"Contacts verified or pattern-derived: {len(contact_result.verified)}")
+    for lead in contact_result.verified:
+        print(
+            f"- {lead.org.org_name} | {lead.person.full_name} | {lead.contact.channel} "
+            f"| {lead.contact.status} ({lead.contact.channel_type}) "
+            f"| evidence: {lead.contact.evidence_url} "
+            f"| sources: {', '.join(str(url) for url in lead.contact.supporting_urls)} "
+            f"| checks: {', '.join(lead.contact.checks_passed)}"
+        )
+    print(f"Organizations without a verified contact: {len(contact_result.dropped)}")
+    for item in contact_result.dropped:
+        print(f"- {item['org_name']} | {item['domain']} | {item['reason']}")
+
     return 0
 
 if __name__ == "__main__":

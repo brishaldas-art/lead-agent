@@ -1,6 +1,6 @@
 # Lead Discovery Agent
 
-An agent that takes a search prompt, an event brochure PDF, or both, and finds sponsors and college delegations. It reads public web pages, identifies organizations, and grounds a decision-maker for each usable lead. Contact verification and Google Sheets export are planned later steps; the final goal is a sheet of verified leads.
+An agent that takes a search prompt, an event brochure PDF, or both, and finds sponsors and college delegations. It reads public web pages, identifies organizations, and grounds a decision-maker for each usable lead. Contact verification is implemented; Google Sheets export remains planned. The final goal is a sheet of verified leads.
 
 The agent never invents data. Gemini is used only for language tasks. URLs, domains, emails and grounding checks are done in code.
 
@@ -11,7 +11,7 @@ The agent never invents data. Gemini is used only for language tasks. URLs, doma
 | 1 | Input processing: prompt and PDF to `SearchPlan` | Done |
 | 2 | Lead discovery: search, filter, classify, crawl, re-plan | Implemented. Offline tests pass. Live run verification in progress |
 | 3 | Decision-maker identification: role-based extraction, grounding, ranking and snippet fallback | Implemented. Offline tests pass |
-| 4 | Contact extraction and verification (code only) | Not started |
+| 4 | Contact extraction and verification (code only) | Implemented. Offline tests pass |
 | 5 | Export to Google Sheets and CSV | Not started |
 
 ## Requirements
@@ -119,6 +119,19 @@ The offline Step 3 tests use fake model and search functions, so they make **zer
 python -m tests.test_step3_people
 python -m tests.test_step3_roles
 python -m tests.test_step3_cli
+python -m tests.test_step4_contacts
+```
+
+### Part 4: Contact extraction and verification
+
+Step 4 is code-only; Gemini never generates or verifies a contact. It scans live official-domain HTML/text for `mailto:` and plain emails, de-obfuscates common `[at]`/`[dot]` forms, and decodes Cloudflare `data-cfemail`. Generic inboxes and emails outside the organization domain are rejected. An email is `Verified` only when it was found on a live official page, its local part matches the Step 3 person, its syntax passes, and the email domain has MX records.
+
+If no exact personal email qualifies, the agent may derive an address only from a dominant same-domain format observed in at least two distinct personal-looking addresses. These are labeled `Pattern-Derived`, never `Verified`. As a final fallback, profile links must be present in the official page HTML, return HTTP 200 on a single ordinary request, and match the person or organization. No login, retries, SMTP probing, or bot-protection bypass is used. Wayback-only contact data is not considered current verification. Each accepted contact retains its evidence/supporting URLs and passed checks in the result and CLI output.
+
+Offline tests inject fake MX and profile responses and make **no DNS, HTTP, API, or live search calls**:
+
+```powershell
+python -m tests.test_step4_contacts
 ```
 
 ## Query rules
@@ -166,6 +179,7 @@ python -m tests.test_crawl
 python -m tests.test_step3_people
 python -m tests.test_step3_roles
 python -m tests.test_step3_cli
+python -m tests.test_step4_contacts
 ```
 
 ## Project layout
@@ -187,6 +201,7 @@ agent/
   replan.py                  re-plan query proposals and validation
   discovery.py               discovery loop
   step3_people.py            decision-maker extraction, grounding and ranking
+  step4_contacts.py          code-only contact extraction and verification
 scripts/
   check_models.py            checks which models your key can use
   make_sample_brochure.py    creates data/sample_brochure.pdf
@@ -194,6 +209,7 @@ data/
   sample_brochure.pdf        test brochure
   blocked_domains.txt        domains excluded from search results
   role_keywords.json         editable decision-maker role priorities
+  generic_inboxes.txt        local-parts rejected as shared inboxes
 tests/                       offline tests
 outputs/                     cache, usage state and trace log (git-ignored)
 ```

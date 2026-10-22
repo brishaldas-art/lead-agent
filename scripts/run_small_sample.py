@@ -24,6 +24,10 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
+# When launched as ``python scripts/run_small_sample.py``, Python places the
+# scripts directory (not the repository root) on sys.path.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
 

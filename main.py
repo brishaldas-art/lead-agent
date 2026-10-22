@@ -101,6 +101,24 @@ def main() -> int:
                 if item.get("snippet"):
                     print(f"      {item['snippet'][:240]}")
 
+    from agent.step3_people import identify_people
+
+    print("\nRunning Step 3: decision-maker identification...")
+    people_result = identify_people(records)
+    print(f"Grounded decision-makers found: {len(people_result.identified)}")
+    for item in people_result.identified:
+        print(
+            f"- {item.org.org_name} | {item.person.full_name} | {item.person.role} "
+            f"| score: {item.person.role_score:.1f} | source: {item.person.source_url}"
+        )
+    print(f"Organizations without a grounded decision-maker: {len(people_result.dropped)}")
+    for item in people_result.dropped:
+        print(f"- {item['org_name']} | {item['domain']} | {item['reason']}")
+    print(
+        f"Step 3 model batches: {people_result.model_batches}; "
+        f"snippet fallbacks used: {people_result.fallback_searches}"
+    )
+
     return 0
 
 if __name__ == "__main__":

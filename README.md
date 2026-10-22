@@ -1,6 +1,6 @@
 # Lead Discovery Agent
 
-An agent that takes a search prompt, an event brochure PDF, or both, and finds sponsors and college delegations. It reads public web pages, identifies organizations, and will (in later parts) name a decision-maker and a real contact for each one. The final output is a Google Sheet of verified leads.
+An agent that takes a search prompt, an event brochure PDF, or both, and finds sponsors and college delegations. It reads public web pages, identifies organizations, and grounds a decision-maker for each usable lead. Contact verification and Google Sheets export are planned later steps; the final goal is a sheet of verified leads.
 
 The agent never invents data. Gemini is used only for language tasks. URLs, domains, emails and grounding checks are done in code.
 
@@ -10,7 +10,7 @@ The agent never invents data. Gemini is used only for language tasks. URLs, doma
 |---|---|---|
 | 1 | Input processing: prompt and PDF to `SearchPlan` | Done |
 | 2 | Lead discovery: search, filter, classify, crawl, re-plan | Implemented. Offline tests pass. Live run verification in progress |
-| 3 | Decision-maker identification | Not started |
+| 3 | Decision-maker identification: role-based extraction, grounding, ranking and snippet fallback | Implemented. Offline tests pass |
 | 4 | Contact extraction and verification (code only) | Not started |
 | 5 | Export to Google Sheets and CSV | Not started |
 
@@ -42,7 +42,7 @@ In `.env`, set:
 
 - `GEMINI_API_KEY`: your key from https://aistudio.google.com/app/apikey
 - `MODEL_FAST` and `MODEL_SMART`: model names your key accepts
-- `OFFLINE=1` while developing, so nothing reaches the API
+- `OFFLINE=1` while developing, so nothing reaches the API. Set `OFFLINE=0` only when you explicitly intend to run a live search/model workflow.
 
 Check which models work. This sends one small request per model:
 
@@ -105,6 +105,22 @@ The corresponding research brief is in `data/sponsor_search_brief.txt`. Company-
 7. **Re-plan (at most one round):** if too few organizations are usable, Gemini proposes up to 4 new search queries. Code rejects any query that is longer than 5 words, contains a URL, repeats an earlier query, or contains event words for a company run.
 8. **Stop conditions:** the run ends when it reaches `MAX_ORGS`, the call budget (`MAX_CALLS_PER_RUN`) or the re-plan limit.
 
+### Part 3: Decision-maker identification
+
+After discovery, each usable organization is checked against the editable priority roles in `data/role_keywords.json`. Step 3 builds merged windows around role keywords, labels every window with its original page URL, and caps context at 6,000 characters per organization. It batches up to `BATCH_ORGS` organizations per Gemini `smart` request.
+
+Gemini only proposes a name, role, organization ID, and source URL. Code rejects candidates unless the person name is present in the original source text (fuzzy score at least 92), a matching target role is supported within 300 characters, and the returned URL exactly matches a labelled page. Candidates are ranked by role priority, page type, and live-versus-Wayback source; the highest-ranked person is selected and the others are retained for audit. Generic entries and prompt-injected claims are not accepted without source grounding.
+
+If no grounded person is found, Step 3 may search the organization's own domain for the highest-priority role and inspect same-domain result snippets. This fallback is limited by `MAX_SNIPPET_FALLBACKS` (default 5); snippet-only sources receive a lower score. Organizations without a grounded person are reported as dropped with a reason. Step 3 never fabricates a name or visits LinkedIn to infer employment.
+
+The offline Step 3 tests use fake model and search functions, so they make **zero API calls and zero live searches**:
+
+```powershell
+python -m tests.test_step3_people
+python -m tests.test_step3_roles
+python -m tests.test_step3_cli
+```
+
 ## Query rules
 
 - Company runs (`Sponsor`, `Both`) use only the industries and city. Words such as "sponsor", "college", "fest", "delegation" and "student" are never added.
@@ -123,6 +139,7 @@ RPD_LIMIT=20
 MAX_ORGS=8
 BATCH_ORGS=3
 MAX_CALLS_PER_RUN=12
+MAX_SNIPPET_FALLBACKS=5
 REPLAN_ROUNDS=1
 OFFLINE=1
 ```
@@ -146,6 +163,9 @@ python -m tests.test_queries
 python -m tests.test_replan
 python -m tests.test_discovery
 python -m tests.test_crawl
+python -m tests.test_step3_people
+python -m tests.test_step3_roles
+python -m tests.test_step3_cli
 ```
 
 ## Project layout
@@ -166,12 +186,14 @@ agent/
   fetch.py                   page fetch with failure ladder
   replan.py                  re-plan query proposals and validation
   discovery.py               discovery loop
+  step3_people.py            decision-maker extraction, grounding and ranking
 scripts/
   check_models.py            checks which models your key can use
   make_sample_brochure.py    creates data/sample_brochure.pdf
 data/
   sample_brochure.pdf        test brochure
   blocked_domains.txt        domains excluded from search results
+  role_keywords.json         editable decision-maker role priorities
 tests/                       offline tests
 outputs/                     cache, usage state and trace log (git-ignored)
 ```
@@ -180,7 +202,7 @@ outputs/                     cache, usage state and trace log (git-ignored)
 
 - **Scanned PDFs** (image-only) are not supported yet. The program logs a warning and uses only regex seeds.
 - **Some company sites block automated access** (HTTP 403) or are slow. These fall back to the Wayback Machine or search snippets. We don't bypass bot protection.
-- **Snippet-only organizations** are not counted as usable for Part 3.
+- **Snippet-only person candidates** are allowed only through Step 3's capped same-domain fallback, are scored below page-grounded candidates, and retain the snippet URL as their evidence source.
 - **LinkedIn, Instagram and Facebook** are not scraped. Their terms and login walls make them unreliable. Social links found on official sites are recorded instead.
 - **DuckDuckGo** returns few results for long or unusual queries, which is why queries are kept short.
 - **The prompt path** returns no seed organizations. Seeds come only from a brochure.

@@ -1,11 +1,14 @@
 """Regression checks for grounded locations and search-ad redirect filtering."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.classify import classify_results
-from agent.fetch import _quality_reason
+from agent.fetch import _quality_reason, fetch_page
 from agent.filters import filter_results
+from agent.orgs import build_orgs
 from agent.schemas import ClassifiedBatch, ClassifiedResult
+from scripts.run_small_sample import _verification_summary
 
 
 def test_search_ad_redirect_is_not_a_lead_domain():
@@ -46,6 +49,40 @@ def test_city_is_only_kept_when_present_in_result_evidence():
 def test_placeholder_copy_is_flagged():
     text = "Solar solutions. " * 30 + "Dolore magna aliqua"
     assert "placeholder text detected" in _quality_reason(text)
+
+
+def test_directory_host_is_not_used_as_company_homepage():
+    candidates = [{
+        "org_name": "Aegis Renewable Tech Solutions Private Limited",
+        "category": "Sponsor",
+        "city": "Kolkata",
+        "url": "https://www.zaubacorp.com/company/AEGIS-RENEWABLE-TECH-SOLUTIONS",
+    }]
+    assert build_orgs(candidates) == []
+    candidates[0]["url"] = "https://aegisrenewables.com/"
+    assert len(build_orgs(candidates)) == 1
+
+
+def test_403_stops_live_url_variant_retries():
+    blocked = SimpleNamespace(status_code=403, text="forbidden", url="https://example.com/")
+    with patch("agent.fetch._get", return_value=blocked) as get, patch("agent.fetch._wayback", return_value=None):
+        result = fetch_page("https://example.com/")
+    assert result["status"] == "dead"
+    assert result["http_status"] == 403
+    assert get.call_count == 1
+
+
+def test_csr_keyword_does_not_count_as_direct_sponsorship():
+    org = {"domain": "jil-jupiter.com"}
+    sources = [{
+        "url": "https://jil-jupiter.com/esg",
+        "title": "ESG and CSR",
+        "snippet": "Kolkata office; community education and CSR initiatives.",
+    }]
+    summary = _verification_summary(org, sources, [], [], "Kolkata")
+    assert summary["status"] == "local_presence_and_related_csr_signal_only"
+    assert summary["direct_sponsorship_evidence_urls"] == []
+    assert summary["related_csr_community_evidence_urls"] == [sources[0]["url"]]
 
 
 if __name__ == "__main__":

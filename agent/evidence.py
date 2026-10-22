@@ -5,12 +5,42 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse, urlunparse
 
+import tldextract
 from rapidfuzz import fuzz
+
+_SUFFIX_EXTRACTOR = tldextract.TLDExtract(suffix_list_urls=())
 
 
 def is_social_url(url: str) -> bool:
     host = (urlparse(url).hostname or "").lower()
     return any(host == d or host.endswith("." + d) for d in ("linkedin.com", "instagram.com"))
+
+
+def domain_matches_name(name: str, url: str) -> bool:
+    """Reject search/listing hosts that are unrelated to the named company.
+
+    This is a conservative consistency check, not proof of domain ownership.
+    A brand token or the organization's initials must occur in the registrable
+    domain; otherwise the URL remains evidence only and is not its homepage.
+    """
+    ext = _SUFFIX_EXTRACTOR(url)
+    domain = (ext.domain or "").lower()
+    if not domain:
+        return False
+    tokens = re.findall(r"[a-z0-9]+", (name or "").lower())
+    legal = {"the", "private", "pvt", "limited", "ltd", "llp", "inc", "corp", "corporation", "company", "co"}
+    generic = {"renewable", "energy", "solar", "power", "green", "solutions", "services", "systems", "technology", "technologies", "india", "west", "bengal", "kolkata"}
+    tokens = [token for token in tokens if token not in legal]
+    if any(len(token) >= 3 and token not in generic and token in domain for token in tokens):
+        return True
+    # Generic multiword brands (for example, "Green Energy") often use the
+    # joined phrase in their domain. Require the full phrase, not one generic
+    # word, so a directory host cannot pass on a weak substring.
+    joined_name = "".join(tokens)
+    if len(tokens) >= 2 and len(joined_name) >= 6 and joined_name in domain:
+        return True
+    initials = "".join(token[0] for token in tokens if token)
+    return len(initials) >= 3 and initials in domain
 
 
 def linkedin_company_name(result: dict) -> str | None:
@@ -28,19 +58,28 @@ def linkedin_company_name(result: dict) -> str | None:
 
 
 def instagram_company_name(result: dict) -> str | None:
-    """Extract a business-like Instagram handle only from a public profile URL."""
+    """Extract a business-like name from a public business profile/post snippet."""
     parsed = urlparse(result.get("url", ""))
     if (parsed.hostname or "").lower() not in {"instagram.com", "www.instagram.com"}:
         return None
     parts = [part for part in (parsed.path or "").split("/") if part]
-    if len(parts) != 1:
+    if not parts or parts[0].lower() in {"popular", "explore", "stories"}:
         return None
     title = result.get("title", "")
-    if not re.search(r"\b(solar|energy|renewable|power|company|solutions)\b", title, re.I):
-        return None
+    snippet = result.get("snippet", "") or ""
     handle = re.search(r"@([A-Za-z0-9_.]+)", title)
-    if handle:
-        return handle.group(1).replace("_", " ").replace(".", " ").strip()
+    if len(parts) == 1 and handle:
+        if re.search(r"\b(solar|energy|renewable|power|company|solutions)\b", title, re.I):
+            return handle.group(1).replace("_", " ").replace(".", " ").strip()
+    # Public post/reel results can carry a company name and location even when
+    # the profile itself is not indexed. Avoid personal-name titles by requiring
+    # a company/sector cue in the title prefix or a matching cue in the snippet.
+    prefix = re.split(r"\s*(?:\||[-–—])\s*", title, maxsplit=1)[0].strip()
+    if not prefix or prefix.lower() in {"instagram", "facebook"}:
+        return None
+    cues = re.compile(r"\b(solar|energy|renewable|power|company|solutions|solar\s+plant)\b", re.I)
+    if cues.search(prefix) or (prefix.lower() in snippet.lower() and cues.search(snippet)):
+        return prefix
     return None
 
 

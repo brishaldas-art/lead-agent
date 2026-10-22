@@ -34,6 +34,17 @@ BLOCKED_DOMAINS: set[str] = {
     "indiamart.com",
     "clutch.co",
     "goodfirms.co",
+    # Company directories, corporate-data aggregators and product catalogs
+    # may help discover a name, but must not be used as the lead's homepage.
+    "zaubacorp.com",
+    "findglocal.com",
+    "thecompanycheck.com",
+    "companydetails.in",
+    "infoqik.com",
+    "enfsolar.com",
+    "corporatedir.com",
+    "tofler.in",
+    "mca.gov.in",
     "crunchbase.com",
     "tracxn.com",
     "timesofindia.indiatimes.com",

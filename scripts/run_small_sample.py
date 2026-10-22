@@ -6,9 +6,9 @@ Preferred low-token mode (one Gemini call maximum):
 Prompt mode uses one extra Step 1 Gemini call:
     python scripts/run_small_sample.py --prompt "Find renewable energy companies in Kolkata"
 
-The normal search uses at most three broad queries plus up to five exact-name
-lookups derived from public LinkedIn/list snippets. At most 30 non-social,
-name-grounded results enter one Gemini classification batch; social pages themselves are
+The normal search uses at most three broad queries plus up to seven exact-name
+lookups derived from public LinkedIn/Instagram/list snippets. At most 30
+non-social, name-grounded results enter one Gemini classification batch; social pages themselves are
 never crawled or sent to Gemini. The run considers at most 3 organizations and
 fetches at most 2 pages per organization.
 """
@@ -127,9 +127,16 @@ def _verification_summary(org, selected_results: list[dict], social_matches: lis
         evidence.append({"url": page.get("url", ""), "text": page.get("text", "") or ""})
 
     location_sources = []
-    sponsor_sources = []
-    sponsor_pattern = re.compile(
-        r"\b(csr|sponsor(?:ship)?s?|partner(?:ship)?s?|student(?:s)?|college|education|community|grant|donation|funding|scholarship|outreach|youth)\b",
+    direct_sponsor_sources = []
+    related_signal_sources = []
+    direct_sponsor_pattern = re.compile(
+        r"\b(sponsorships?|sponsored\s+(?:events?|programs?|students?|colleges?)|"
+        r"sponsor(?:s|ed|ing)?\s+(?:events?|programs?|students?|colleges?))\b",
+        re.I,
+    )
+    related_signal_pattern = re.compile(
+        r"\b(csr|esg|education|student(?:s)?|college|community|grant|donation|"
+        r"funding|scholarship|outreach|youth)\b",
         re.I,
     )
     city_pattern = re.compile(rf"(?<!\w){re.escape(city.strip())}(?!\w)", re.I) if city else None
@@ -137,23 +144,29 @@ def _verification_summary(org, selected_results: list[dict], social_matches: lis
         text = item["text"]
         if city_pattern and city_pattern.search(text):
             location_sources.append(item["url"])
-        if sponsor_pattern.search(text):
-            sponsor_sources.append(item["url"])
+        if direct_sponsor_pattern.search(text):
+            direct_sponsor_sources.append(item["url"])
+        if related_signal_pattern.search(text):
+            related_signal_sources.append(item["url"])
 
     location_sources = list(dict.fromkeys(x for x in location_sources if x))
-    sponsor_sources = list(dict.fromkeys(x for x in sponsor_sources if x))
-    if location_sources and sponsor_sources:
-        status = "local_presence_and_sponsor_signal_found"
+    direct_sponsor_sources = list(dict.fromkeys(x for x in direct_sponsor_sources if x))
+    related_signal_sources = list(dict.fromkeys(x for x in related_signal_sources if x))
+    if location_sources and direct_sponsor_sources:
+        status = "local_presence_and_direct_sponsorship_evidence"
+    elif location_sources and related_signal_sources:
+        status = "local_presence_and_related_csr_signal_only"
     elif location_sources:
-        status = "local_presence_found_sponsor_signal_not_found"
+        status = "local_presence_verified_no_sponsor_signal"
     else:
         status = "location_unverified"
     return {
         "status": status,
         "target_city": city,
         "location_evidence_urls": location_sources,
-        "sponsor_or_community_signal_urls": sponsor_sources,
-        "warning": "A keyword signal is not proof of sponsorship willingness; review the cited page.",
+        "direct_sponsorship_evidence_urls": direct_sponsor_sources,
+        "related_csr_community_evidence_urls": related_signal_sources,
+        "warning": "CSR/community keywords are only research signals. Sponsorship willingness requires direct evidence and human review.",
     }
 
 
@@ -174,6 +187,7 @@ def main() -> int:
     from agent.discovery import run_discovery
     from agent.evidence import (
         canonical_url_key,
+        domain_matches_name,
         is_social_url,
         instagram_company_name,
         linkedin_company_name,
@@ -218,7 +232,7 @@ def main() -> int:
 
     print("Small sample limits:")
     print(f"  Broad company queries: {len(plan.queries)} (at most 24 raw results)")
-    print("  Public social searches: up to 2; only company-name lookups can enter classification")
+    print("  Public social searches: up to 2; company names are resolved to non-social sites")
     print("  Candidate rows sent to Gemini: at most 30 in one batch")
     print(f"  Maximum Gemini calls this run: {os.environ['MAX_CALLS_PER_RUN']}")
     print(f"  Maximum organizations/pages: {args.max_orgs}/{args.max_pages}")
@@ -260,13 +274,17 @@ def main() -> int:
         for row in rows:
             name = instagram_company_name(row)
             key = (name or "").casefold()
-            if name and key not in seen_seed_names:
-                seeds.append((name, "instagram_profile_result"))
+            near_duplicate = any(
+                result_matches_name(name, {"title": existing, "snippet": ""}, threshold=85)
+                for existing, _source in seeds
+            ) if name else False
+            if name and key not in seen_seed_names and not near_duplicate:
+                seeds.append((name, "instagram_profile_or_post_result"))
                 seen_seed_names.add(key)
                 instagram_seed_count += 1
-            if instagram_seed_count >= 1:
+            if instagram_seed_count >= 2:
                 break
-        if instagram_seed_count >= 1:
+        if instagram_seed_count >= 2:
             break
     for row in dropped_results:
         if row.get("drop_reason") != "listicle":
@@ -280,7 +298,7 @@ def main() -> int:
                 break
         if sum(source == "listicle_snippet" for _, source in seeds) >= 2:
             break
-    seeds = seeds[:5]
+    seeds = seeds[:7]
 
     lookup_log: dict[str, list[dict]] = {}
     matched_lookup_results: list[dict] = []
@@ -290,8 +308,11 @@ def main() -> int:
         rows = run_query(lookup_query) or []
         lookup_log[lookup_query] = rows
         kept, _ = filter_results(rows)
-        matches = [row for row in kept if result_matches_name(name, row)]
-        for row in matches[:2]:
+        matches = [
+            row for row in kept
+            if result_matches_name(name, row) and domain_matches_name(name, row.get("url", ""))
+        ]
+        for row in matches[:1]:
             matched_lookup_results.append({
                 **row,
                 "_seed_name": name,
@@ -301,7 +322,7 @@ def main() -> int:
             "name": name,
             "source": source,
             "query": lookup_query,
-            "name_matched_results": min(len(matches), 2),
+            "name_matched_results": min(len(matches), 1),
         })
 
     # Prefer exact-name search matches to social/list snippets. Deduplicate URLs
@@ -368,8 +389,8 @@ def main() -> int:
             "max_gemini_calls": int(os.environ["MAX_CALLS_PER_RUN"]),
             "max_primary_search_queries": len(plan.queries),
             "max_results_per_query": 8,
-            "max_company_name_lookups": 5,
-            "max_name_matched_results_per_lookup": 2,
+            "max_company_name_lookups": 7,
+            "max_name_matched_results_per_lookup": 1,
             "max_candidate_rows_to_classify": 30,
             "max_organizations": args.max_orgs,
             "max_pages_per_organization": args.max_pages,

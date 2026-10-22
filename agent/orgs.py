@@ -9,6 +9,7 @@ import tldextract
 from rapidfuzz import fuzz
 
 from .schemas import OrgCandidate
+from .evidence import domain_matches_name
 
 _logger = logging.getLogger(__name__)
 # Use tldextract's bundled suffix snapshot. Avoid an unplanned network request
@@ -81,8 +82,17 @@ def build_orgs(classified: List[Dict], discovered_via: str = "search") -> List[O
         domain = f"{ext.domain}.{ext.suffix}"
         if domain in seen_domains:
             continue
-        # Clean organization name
+        # Clean organization name and reject directory/search-result hosts that
+        # do not resemble the company's brand or initials. The URL is evidence,
+        # not an official homepage, unless this consistency check passes.
         cleaned_name = clean_name(item.get("org_name", ""))
+        if not domain_matches_name(cleaned_name, url):
+            _logger.warning(
+                "Skipping mismatched host %s for organization %s",
+                url,
+                cleaned_name,
+            )
+            continue
         # Deduplicate by similar name
         duplicate = False
         for cand in results:

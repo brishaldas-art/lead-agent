@@ -82,9 +82,9 @@ To search one industry and city while allowing at most one Gemini classification
 python -m scripts.run_small_sample --city "Kolkata" --industry "renewable energy"
 ```
 
-This runs up to 3 broad searches, 2 public social searches, and up to 5 exact-name lookups seeded from public LinkedIn company snippets or names explicitly present in list-result snippets. Social URLs are never treated as organization websites; list-result snippets only seed a separate company-name lookup. At most 30 non-social results are classified in one batch; output is capped at 3 organizations and 2 pages per organization. It writes evidence, verification flags, status codes, and token usage to `outputs/small_sample.json`.
+This runs up to 3 broad searches, 2 public social searches, and up to 7 exact-name lookups seeded from public LinkedIn/Instagram snippets or names explicitly present in list-result snippets. Social URLs are never treated as organization websites; list-result snippets only seed a separate company-name lookup. At most 30 non-social results are classified in one batch; output is capped at 3 organizations and 2 pages per organization. It writes evidence, verification flags, status codes, and token usage to `outputs/small_sample.json`.
 
-The corresponding research brief is in `data/sponsor_search_brief.txt`. Location and sponsor-related signals are reported only when found in evidence; absence of a signal is not proof that an organization is unsuitable.
+The corresponding research brief is in `data/sponsor_search_brief.txt`. Company-directory hosts are filtered as discovery sources, and a candidate homepage must also resemble the organization's brand or initials. Public social snippets can seed a name lookup (including business-like Instagram post titles), but are not treated as company-site evidence. Location evidence, direct sponsorship wording, and weaker CSR/community signals are reported separately; CSR keywords alone do not count as sponsorship, and absence of a signal is not proof that an organization is unsuitable.
 
 ## How it works
 

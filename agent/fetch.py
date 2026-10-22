@@ -116,6 +116,10 @@ def fetch_page(url: str) -> Dict[str, Optional[str]]:
             if resp is None:
                 continue
             last_http_status = resp.status_code
+            if resp.status_code in (401, 403, 429):
+                # Respect explicit denials and rate limits; don't retry other
+                # live URL variants of a host that has refused this request.
+                break
             if resp.status_code >= 400 or not resp.text:
                 continue
             final_url = str(resp.url)

@@ -82,7 +82,15 @@ To search one industry and city while allowing at most one Gemini classification
 python -m scripts.run_small_sample --city "Kolkata" --industry "renewable energy"
 ```
 
-This runs up to 3 broad searches, 2 public social searches, and up to 7 exact-name lookups seeded from public LinkedIn/Instagram snippets or names explicitly present in list-result snippets. Social URLs are never treated as organization websites; list-result snippets only seed a separate company-name lookup. At most 30 non-social results are classified in one batch; output is capped at 3 organizations and 2 pages per organization. It writes evidence, verification flags, status codes, and token usage to `outputs/small_sample.json`.
+This discovery-only run uses at most 1 Gemini call. It runs up to 3 broad searches, 2 public social searches, and up to 7 exact-name lookups seeded from public LinkedIn/Instagram snippets or names explicitly present in list-result snippets. Social URLs are never treated as organization websites; list-result snippets only seed a separate company-name lookup. At most 30 non-social results are classified in one batch; output is capped at 3 organizations and 2 pages per organization. It writes evidence, verification flags, status codes, and token usage to `outputs/small_sample.json`.
+
+For an end-to-end live test with fewer tokens, add `--full-pipeline`:
+
+```powershell
+python -m scripts.run_small_sample --city "Kolkata" --industry "renewable energy" --full-pipeline
+```
+
+Deterministic city mode skips the Step 1 model call, limits classification to 18 candidates, batches all selected organizations (3 by default, at most 5) into one Step 3 call, and permits at most one Step 3 fallback call within a 3-call Gemini budget. Transient API failures may cause additional retry attempts; the reported token usage is the provider's response metadata. It runs live search/page fetch and Step 4's ordinary contact checks, then writes Step 5 outputs to `outputs/live_sample/`. Google Sheets is forcibly disabled for this test. Set `OFFLINE=0` and configure `GEMINI_API_KEY` in the local `.env`; the runner exits before searching if these are missing or offline mode remains enabled. Never paste the key into chat.
 
 The corresponding research brief is in `data/sponsor_search_brief.txt`. Company-directory hosts are filtered as discovery sources, and a candidate homepage must also resemble the organization's brand or initials. Public social/list snippets can seed name lookups (including business-like Instagram post titles), but are not treated as company-site evidence. The normal `main.py --prompt` Sponsor/Both discovery uses the same bounded enrichment by default: up to two public social searches, seven exact-name lookups, and a 30-result classification cap when verified lookup results are available. Social/list sources are returned under a separately labeled `discovery_evidence` field and printed as discovery-only evidence. Location evidence, direct sponsorship wording, and weaker CSR/community signals are reported separately; CSR keywords alone do not count as sponsorship, and absence of a signal is not proof that an organization is unsuitable.
 
@@ -195,6 +203,7 @@ python -m tests.test_step3_roles
 python -m tests.test_step3_cli
 python -m tests.test_step4_contacts
 python -m tests.test_step5_export
+python -m tests.test_small_sample
 python -m tests.test_budget
 ```
 

@@ -11,6 +11,12 @@ lookups derived from public LinkedIn/Instagram/list snippets. At most 30
 non-social, name-grounded results enter one Gemini classification batch; social pages themselves are
 never crawled or sent to Gemini. The run considers at most 3 organizations and
 fetches at most 2 pages per organization.
+
+Add --full-pipeline to run Steps 3-5 too. Deterministic city mode skips Step 1,
+limits classification to 18 candidates, batches the selected organizations
+(up to 5) into one people call and allows at most one fallback call. The
+Gemini budget is 3 recorded calls in deterministic city mode.
+Google Sheets is explicitly disabled; local exports go to outputs/live_sample.
 """
 
 from __future__ import annotations
@@ -52,6 +58,16 @@ def parse_args() -> argparse.Namespace:
         "--no-social-search",
         action="store_true",
         help="Skip the extra public LinkedIn/Instagram search queries",
+    )
+    parser.add_argument(
+        "--full-pipeline",
+        action="store_true",
+        help="Also run Steps 3-5, with at most 3 Gemini calls for deterministic city mode",
+    )
+    parser.add_argument(
+        "--export-dir",
+        default="outputs/live_sample",
+        help="Isolated local export directory for --full-pipeline",
     )
     parser.add_argument(
         "--output",
@@ -130,13 +146,25 @@ def _verification_summary(org, selected_results: list[dict], social_matches: lis
 def main() -> int:
     args = parse_args()
 
-    # Set hard limits before importing discovery/Gemini modules (they read env
-    # variables at import time). A manual plan needs at most one Gemini call;
-    # prompt mode allows one planning call plus one classification call.
-    os.environ["MAX_CALLS_PER_RUN"] = "2" if args.prompt else "1"
+    # Full deterministic mode uses one discovery batch, one people batch, and
+    # at most one fallback batch. Prompt mode adds exactly one planning call.
+    # These caps are set before importing modules that read environment values.
+    if args.full_pipeline:
+        if not os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "").startswith("paste_"):
+            print("Full-pipeline live test needs GEMINI_API_KEY in the local .env; no searches or API calls were made.", file=sys.stderr)
+            return 2
+        if os.getenv("OFFLINE", "0") == "1":
+            print("Full-pipeline live test requires OFFLINE=0 in the local .env; no searches or API calls were made.", file=sys.stderr)
+            return 2
+        max_calls = (4 if args.prompt else 3)
+        os.environ["MAX_SNIPPET_FALLBACKS"] = "1"
+    else:
+        max_calls = 2 if args.prompt else 1
+    os.environ["MAX_CALLS_PER_RUN"] = str(max_calls)
     os.environ["REPLAN_ROUNDS"] = "0"
     os.environ["MAX_ORGS"] = str(args.max_orgs)
     os.environ["MAX_PAGES_PER_ORG"] = str(args.max_pages)
+    os.environ["BATCH_ORGS"] = str(args.max_orgs)
 
     from agent.schemas import SearchPlan
     from agent.search import run_query
@@ -190,9 +218,12 @@ def main() -> int:
     print("Small sample limits:")
     print(f"  Broad company queries: {len(plan.queries)} (at most 24 raw results)")
     print("  Public social searches: up to 2; company names are resolved to non-social sites")
-    print("  Candidate rows sent to Gemini: at most 30 in one batch")
+    classification_cap = 18 if args.full_pipeline else 30
+    print(f"  Candidate rows sent to Gemini: at most {classification_cap} in one batch")
     print(f"  Maximum Gemini calls this run: {os.environ['MAX_CALLS_PER_RUN']}")
     print(f"  Maximum organizations/pages: {args.max_orgs}/{args.max_pages}")
+    if args.full_pipeline:
+        print("  Full pipeline: one Step 3 fallback at most; Sheets sync disabled; exports isolated")
     print(f"  First query: {plan.queries[0]}")
     if args.prompt:
         print("  Note: prompt mode uses one planning call; candidate classification is capped at one batch.")
@@ -283,7 +314,7 @@ def main() -> int:
         })
 
     # Prefer exact-name search matches to social/list snippets. Deduplicate URLs
-    # and cap the combined set at 30, so classification remains one Gemini call.
+    # and cap the combined set to keep classification compact and in one call.
     selected_results: list[dict] = []
     seen_urls: set[str] = set()
     for row in [*matched_lookup_results, *eligible_results]:
@@ -292,7 +323,7 @@ def main() -> int:
             continue
         selected_results.append(row)
         seen_urls.add(key)
-        if len(selected_results) >= 30:
+        if len(selected_results) >= classification_cap:
             break
 
     classification_plan = plan.model_copy(update={"queries": ["bounded_grounded_candidates"]})
@@ -342,6 +373,65 @@ def main() -> int:
             "pages": pages,
         })
 
+    full_pipeline = None
+    if args.full_pipeline:
+        from agent.step3_people import identify_people
+        from agent.step4_contacts import verify_contacts
+        from agent.step5_export import export_verified_leads
+
+        people_result = identify_people(
+            records,
+            batch_orgs=args.max_orgs,
+            max_snippet_fallbacks=1,
+        )
+        contact_result = verify_contacts(people_result, records)
+        export_dir = Path(args.export_dir)
+        if not export_dir.is_absolute():
+            export_dir = ROOT / export_dir
+        export_result = export_verified_leads(
+            contact_result,
+            records,
+            output_dir=export_dir,
+            sheet_id="",
+            credentials_path="",
+        )
+        full_pipeline = {
+            "decision_makers": [
+                {
+                    "organization": item.org.model_dump(mode="json"),
+                    "person": item.person.model_dump(mode="json"),
+                }
+                for item in people_result.identified
+            ],
+            "people_dropped": people_result.dropped,
+            "model_batches": people_result.model_batches,
+            "snippet_fallbacks_used": people_result.fallback_searches,
+            "verified_contacts": [
+                {
+                    "organization": item.org.model_dump(mode="json"),
+                    "person": item.person.model_dump(mode="json"),
+                    "contact": item.contact.model_dump(mode="json"),
+                }
+                for item in contact_result.verified
+            ],
+            "contacts_dropped": contact_result.dropped,
+            "export": {
+                "rows_added": export_result.rows_added,
+                "total_rows": export_result.total_rows,
+                "duplicates_skipped": export_result.duplicates_skipped,
+                "dropped": export_result.dropped,
+                "csv_path": export_result.csv_path,
+                "audit_csv_path": export_result.audit_csv_path,
+                "database_path": export_result.database_path,
+                "sheets_status": export_result.sheets_status,
+                "sheets_message": export_result.sheets_message,
+            },
+        }
+        print(f"Decision-makers found: {len(people_result.identified)}")
+        print(f"Verified contacts: {len(contact_result.verified)}")
+        print(f"Step 5 accepted rows: {export_result.rows_added}; dropped: {len(export_result.dropped)}")
+        print(f"Local export directory: {export_dir}")
+
     output = {
         "limits": {
             "max_gemini_calls": int(os.environ["MAX_CALLS_PER_RUN"]),
@@ -349,7 +439,7 @@ def main() -> int:
             "max_results_per_query": 8,
             "max_company_name_lookups": 7,
             "max_name_matched_results_per_lookup": 1,
-            "max_candidate_rows_to_classify": 30,
+            "max_candidate_rows_to_classify": classification_cap,
             "max_organizations": args.max_orgs,
             "max_pages_per_organization": args.max_pages,
             "replanning_rounds": 0,
@@ -393,6 +483,7 @@ def main() -> int:
             ),
         },
         "organizations": serialized_records,
+        "full_pipeline": full_pipeline,
         "gemini_usage": {
             "calls": BUDGET.run_calls,
             "cache_hits": BUDGET.cache_hits,

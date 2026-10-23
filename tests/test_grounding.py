@@ -129,15 +129,15 @@ def test_403_stops_live_url_variant_retries():
 
 def test_csr_keyword_does_not_count_as_direct_sponsorship():
     org = {"domain": "jil-jupiter.com"}
-    sources = [{
+    official_page = {
         "url": "https://jil-jupiter.com/esg",
-        "title": "ESG and CSR",
-        "snippet": "Kolkata office; community education and CSR initiatives.",
-    }]
-    summary = _verification_summary(org, sources, [], [], "Kolkata")
+        "status": "ok",
+        "text": "Kolkata office; community education and CSR initiatives.",
+    }
+    summary = _verification_summary(org, [], [], [official_page], "Kolkata")
     assert summary["status"] == "local_presence_and_related_csr_signal_only"
     assert summary["direct_sponsorship_evidence_urls"] == []
-    assert summary["related_csr_community_evidence_urls"] == [sources[0]["url"]]
+    assert summary["related_csr_community_evidence_urls"] == [official_page["url"]]
 
     social_only = [{
         "url": "https://www.linkedin.com/company/jupiter-international/",
@@ -151,10 +151,10 @@ def test_csr_keyword_does_not_count_as_direct_sponsorship():
 
     direct_source = {
         "url": "https://jil-jupiter.com/community",
-        "title": "Community partnerships",
-        "snippet": "Kolkata office; Jupiter sponsors local college fests.",
+        "status": "ok",
+        "text": "Kolkata office; Jupiter sponsors college fests.",
     }
-    summary = _verification_summary(org, [direct_source], [], [], "Kolkata")
+    summary = _verification_summary(org, [], [], [direct_source], "Kolkata")
     assert summary["status"] == "local_presence_and_direct_sponsorship_evidence"
     assert summary["direct_sponsorship_evidence_urls"] == [direct_source["url"]]
 

@@ -133,8 +133,9 @@ def _verification_summary(org, selected_results: list[dict], social_matches: lis
     """Summarize company-site evidence; retain social matches as discovery-only."""
     from agent.evidence import summarize_official_evidence
 
+    org_domain = org.get("domain", "") if isinstance(org, dict) else getattr(org, "domain", "")
     summary = summarize_official_evidence(
-        org.domain,
+        org_domain,
         selected_results,
         pages,
         city,

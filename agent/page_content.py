@@ -17,9 +17,14 @@ _FOOTER_SELECTORS = (
 
 
 def _is_hidden(tag: Tag) -> bool:
-    if tag.has_attr("hidden") or str(tag.get("aria-hidden", "")).casefold() == "true":
+    # BeautifulSoup clears ``attrs`` on descendants when an ancestor is
+    # decomposed; those detached nodes can still appear in a prebuilt list.
+    attrs = getattr(tag, "attrs", None)
+    if not isinstance(attrs, dict):
+        return False
+    if "hidden" in attrs or str(attrs.get("aria-hidden", "")).casefold() == "true":
         return True
-    style = re.sub(r"\s+", "", str(tag.get("style", "")).casefold())
+    style = re.sub(r"\s+", "", str(attrs.get("style", "")).casefold())
     return "display:none" in style or "visibility:hidden" in style
 
 

@@ -7,6 +7,7 @@ def test_extracts_visible_footer_text_from_common_footer_patterns():
     <html><body>
       <footer>Registered office: Kolkata. <a href="mailto:info@example.in">info@example.in</a>
         <span hidden>Hidden note: Mumbai</span>
+        <div aria-hidden="true"><span><b>Nested hidden descendant</b></span></div>
         <span style="display: none">Hidden email: hidden@example.in</span>
         <script>const city = 'Fake City';</script>
       </footer>

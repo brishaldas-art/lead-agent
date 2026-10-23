@@ -228,7 +228,8 @@ def extract_page_emails(page: dict[str, Any]) -> list[EmailEvidence]:
             if decoded:
                 candidates.append(decoded)
 
-    searchable = _deobfuscate_text(visible_text + "\n" + html_text)
+    footer_text = str(page.get("footer_text", "") or "")
+    searchable = _deobfuscate_text(visible_text + "\n" + footer_text + "\n" + html_text)
     candidates.extend(EMAIL_RE.findall(searchable))
     out: list[EmailEvidence] = []
     seen: set[str] = set()

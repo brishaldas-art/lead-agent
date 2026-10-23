@@ -18,6 +18,7 @@ from agent.classify import classify_results
 from agent.orgs import build_orgs
 from agent.crawl import score_links
 from agent.fetch import fetch_page
+from agent.page_content import extract_footer_text
 from agent.replan import should_replan, propose_queries
 from agent.evidence import (
     canonical_url_key,
@@ -210,6 +211,10 @@ def _enrich_search_results(plan, primary_results: list[dict], search_fn, deadlin
 
 def _page_from_fetch(result: dict) -> dict:
     url = result.get("final_url") or ""
+    raw_html = str(result.get("html", "") or "")
+    footer_text = extract_footer_text(raw_html)
+    if str(result.get("status", "")).casefold() == "ok":
+        logger.info("footer inspected for %s: %d visible chars", url, len(footer_text))
     return {
         "url": url,
         "page_type": _page_type(url),
@@ -217,7 +222,8 @@ def _page_from_fetch(result: dict) -> dict:
         "http_status": result.get("http_status"),
         "reason": result.get("reason", "") or "",
         "text": result.get("text", "") or "",
-        "html": result.get("html", "") or "",
+        "html": raw_html,
+        "footer_text": footer_text,
     }
 
 

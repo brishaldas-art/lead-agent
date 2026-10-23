@@ -27,6 +27,7 @@ from rapidfuzz import fuzz
 
 from agent.step4_contacts import Step4Outcome, VerifiedLead
 from agent.location import city_pattern
+from agent.page_content import extract_footer_text
 
 logger = logging.getLogger("agent.step5")
 ROOT = Path(__file__).resolve().parents[1]
@@ -201,9 +202,15 @@ def _page_verification_text(page: dict[str, Any]) -> str:
     details can legitimately appear there, so inspect the fetched HTML as well,
     while discarding non-visible script/style/template content.
     """
-    parts = [_clean_text(page.get("text", ""))]
+    parts = [
+        _clean_text(page.get("text", "")),
+        _clean_text(page.get("footer_text", "")),
+    ]
     raw_html = str(page.get("html", "") or "")
     if raw_html:
+        marked_footer_text = extract_footer_text(raw_html)
+        if marked_footer_text:
+            parts.append(marked_footer_text)
         try:
             soup = BeautifulSoup(raw_html, "html.parser")
             for node in soup(["script", "style", "noscript", "template"]):
@@ -738,6 +745,8 @@ def _persist_candidate_review(
                     "status": _clean_text(page.get("status", "")),
                     "http_status": page.get("http_status"),
                     "page_type": _clean_text(page.get("page_type", "")),
+                    "footer_text_extracted": bool(_clean_text(page.get("footer_text", ""))),
+                    "footer_text_excerpt": _clean_text(page.get("footer_text", ""))[:800],
                     "text_excerpt": _clean_text(page.get("text", ""))[:800],
                 }
                 for page in (record.get("pages", []) or [])

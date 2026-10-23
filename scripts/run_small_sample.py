@@ -500,7 +500,7 @@ def main() -> int:
     print(f"\nWrote {out_path.relative_to(ROOT) if out_path.is_relative_to(ROOT) else out_path}")
     print(f"Main results: {len(all_main_results)}; eligible: {len(eligible_results)}")
     print(f"Name-matched lookup results: {len(matched_lookup_results)}")
-    print(f"Rows selected for classification: {len(selected_results)} (max 30)")
+    print(f"Rows selected for classification: {len(selected_results)} (max {classification_cap})")
     print(f"Main filter drops: {drop_reasons}; lookup drops: {dict(lookup_drop_reasons)}")
     print(f"Organizations with usable evidence: {len(serialized_records)}")
     print(f"Gemini calls used: {BUDGET.run_calls}; cached answers: {BUDGET.cache_hits}")

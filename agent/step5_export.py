@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.parse import urlsplit, urlunsplit
 
+from bs4 import BeautifulSoup
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from rapidfuzz import fuzz
 
@@ -193,6 +194,28 @@ def _official_live_page(page: dict[str, Any], root_domain: str) -> bool:
     return bool(root_domain and (host == root_domain or host.endswith("." + root_domain)))
 
 
+def _page_verification_text(page: dict[str, Any]) -> str:
+    """Combine extracted main text with visible HTML text for strict evidence checks.
+
+    Main-text extractors often omit navigation or footers. Official location/contact
+    details can legitimately appear there, so inspect the fetched HTML as well,
+    while discarding non-visible script/style/template content.
+    """
+    parts = [_clean_text(page.get("text", ""))]
+    raw_html = str(page.get("html", "") or "")
+    if raw_html:
+        try:
+            soup = BeautifulSoup(raw_html, "html.parser")
+            for node in soup(["script", "style", "noscript", "template"]):
+                node.decompose()
+            visible_text = _clean_text(soup.get_text(" "))
+            if visible_text:
+                parts.append(visible_text)
+        except Exception:
+            pass
+    return _clean_text(" ".join(part for part in parts if part))
+
+
 def _location_evidence(lead: VerifiedLead, records_by_domain: dict[str, dict[str, Any]]) -> tuple[str, list[str]]:
     domain = _root_domain(lead.org.domain)
     entry = records_by_domain.get(domain, {})
@@ -208,15 +231,7 @@ def _location_evidence(lead: VerifiedLead, records_by_domain: dict[str, dict[str
     for page in pages:
         if not _official_live_page(page, domain):
             continue
-        text = _clean_text(page.get("text", ""))
-        if not text and page.get("html"):
-            # Most Step 2 bundles already include text; HTML fallback keeps this
-            # deterministic and does not make another request.
-            try:
-                from bs4 import BeautifulSoup
-                text = _clean_text(BeautifulSoup(str(page["html"]), "html.parser").get_text(" "))
-            except Exception:
-                text = ""
+        text = _page_verification_text(page)
         if city_matcher and city_matcher.search(text):
             url = _clean_text(page.get("url", ""))
             if url and url not in sources:
@@ -687,7 +702,7 @@ def _persist_candidate_review(
             if target_location:
                 location_pattern = city_pattern(target_location)
                 for page in record.get("pages", []) or []:
-                    if _official_live_page(page, domain) and location_pattern.search(_clean_text(page.get("text", ""))):
+                    if _official_live_page(page, domain) and location_pattern.search(_page_verification_text(page)):
                         page_url = _clean_text(page.get("url", ""))
                         if page_url and page_url not in official_location_urls:
                             official_location_urls.append(page_url)

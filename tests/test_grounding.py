@@ -22,6 +22,38 @@ def test_search_ad_redirect_is_not_a_lead_domain():
     assert dropped[0]["drop_reason"] == "blocked_domain"
 
 
+def test_csr_publisher_is_filtered_as_a_discovery_source():
+    result = {
+        "title": "Top CSR projects in Kolkata",
+        "url": "https://thecsrjournal.in/top-csr-kolkata",
+        "snippet": "News and analysis of CSR programs.",
+    }
+    kept, dropped = filter_results([result])
+    assert not kept
+    assert dropped[0]["drop_reason"] == "blocked_domain"
+
+
+def test_classifier_sees_source_host_and_sponsor_exclusion_rules():
+    result = {
+        "title": "Welcome to WBREDA",
+        "url": "https://wbreda.org/",
+        "snippet": "State nodal agency for renewable energy programs.",
+    }
+    batch = ClassifiedBatch(results=[ClassifiedResult(
+        result_id=0,
+        relevant=False,
+        org_name="WBREDA",
+        category="Sponsor",
+        city=None,
+    )])
+    with patch("agent.classify.ask", return_value=batch) as ask:
+        assert classify_results([result], "Sponsor", "Kolkata") == []
+    prompt = ask.call_args.args[1]
+    assert "source: wbreda.org" in prompt
+    assert "government departments/agencies" in prompt
+    assert "news publishers" in prompt
+
+
 def test_city_is_only_kept_when_present_in_result_evidence():
     batch = ClassifiedBatch(results=[ClassifiedResult(
         result_id=0,
@@ -106,6 +138,8 @@ def test_csr_keyword_does_not_count_as_direct_sponsorship():
 
 if __name__ == "__main__":
     test_search_ad_redirect_is_not_a_lead_domain()
+    test_csr_publisher_is_filtered_as_a_discovery_source()
+    test_classifier_sees_source_host_and_sponsor_exclusion_rules()
     test_city_is_only_kept_when_present_in_result_evidence()
     test_placeholder_copy_is_flagged()
     print("grounding tests passed")

@@ -15,7 +15,8 @@ SCORE_RULES: List[Tuple[Tuple[str, ...], int]] = [
     (("team", "leadership", "management", "people", "board", "council", "office-bearers"), 5),
     (("about", "who-we-are", "committee", "society", "students"), 3),
     (("contact", "reach-us"), 3),
-    (("sponsor", "partners", "csr", "press", "media"), 2),
+    (("sponsor", "partners", "csr", "esg", "sustainability", "governance"), 4),
+    (("press", "media"), 2),
 ]
 
 SKIP_KEYWORDS = (

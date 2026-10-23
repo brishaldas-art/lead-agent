@@ -41,10 +41,13 @@ PEOPLE = (
 
 # Classification template – expects a category, city and numbered results block
 CLASSIFY = (
-    "Classify each numbered result according to the requested category and city.\n"
+    "Classify each numbered search result according to the requested category and city.\n"
     "Category: {category}\n"
     "City: {city}\n"
-    "Results:<<<{numbered_results}>>>\n"
+    "Results (source host, title, snippet):<<<{numbered_results}>>>\n"
+    "For Sponsor results, relevant means the result identifies an actual operating company whose business fits the requested sector. "
+    "Exclude government departments/agencies, regulators, news publishers, journals, CSR portals, directories, and pages that merely discuss or list other companies. "
+    "Prefer a company's own official site over third-party or discovery-only pages.\n"
     "For each result_id, output relevant (true or false), org_name exactly as written, category, and city only if explicitly stated in that result's title or snippet. "
     "Do not infer a company's location from the search query or from general knowledge; otherwise set city to null."
 )

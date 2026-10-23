@@ -10,7 +10,7 @@ The normal search uses at most three broad queries plus up to seven exact-name
 lookups derived from public LinkedIn/Instagram/list snippets. At most 30
 non-social, name-grounded results enter one Gemini classification batch; social pages themselves are
 never crawled or sent to Gemini. The run considers at most 3 organizations and
-fetches at most 2 pages per organization.
+fetches at most 3 pages per organization by default.
 
 Add --full-pipeline to run Steps 3-5 too. Deterministic city mode skips Step 1,
 limits classification to 18 candidates, batches the selected organizations
@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
         help="Lead category for deterministic mode (default: Sponsor)",
     )
     parser.add_argument("--max-orgs", type=int, default=3, choices=range(1, 6))
-    parser.add_argument("--max-pages", type=int, default=2, choices=range(1, 4))
+    parser.add_argument("--max-pages", type=int, default=3, choices=range(1, 4))
     parser.add_argument(
         "--no-social-search",
         action="store_true",

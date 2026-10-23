@@ -82,7 +82,7 @@ To search one industry and city while allowing at most one Gemini classification
 python -m scripts.run_small_sample --city "Kolkata" --industry "renewable energy"
 ```
 
-This discovery-only run uses at most 1 Gemini call. It runs up to 3 broad searches, 2 public social searches, and up to 7 exact-name lookups seeded from public LinkedIn/Instagram snippets or names explicitly present in list-result snippets. Social URLs are never treated as organization websites; list-result snippets only seed a separate company-name lookup. At most 30 non-social results are classified in one batch; output is capped at 3 organizations and 2 pages per organization. It writes evidence, verification flags, status codes, and token usage to `outputs/small_sample.json`.
+This discovery-only run uses at most 1 Gemini call. It runs up to 3 broad searches, 2 public social searches, and up to 7 exact-name lookups seeded from public LinkedIn/Instagram snippets or names explicitly present in list-result snippets. Social URLs are never treated as organization websites; list-result snippets only seed a separate company-name lookup. At most 30 non-social results are classified in one batch; output is capped at 3 organizations and 3 pages per organization by default. It writes evidence, verification flags, status codes, and token usage to `outputs/small_sample.json`.
 
 For an end-to-end live test with fewer tokens, add `--full-pipeline`:
 

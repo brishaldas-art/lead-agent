@@ -53,6 +53,7 @@ BLOCKED_DOMAINS: set[str] = {
     "moneycontrol.com",
     "ndtv.com",
     "inc42.com",
+    "thecsrjournal.in",
 }
 
 BLOCKED_EXTENSIONS = (

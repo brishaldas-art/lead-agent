@@ -5,6 +5,7 @@ Ensures Gemini never supplies URLs; every org name is grounded against the origi
 import logging
 import re
 from typing import List, Dict
+from urllib.parse import urlparse
 
 from rapidfuzz import fuzz
 
@@ -57,8 +58,12 @@ def classify_results(results: List[Dict], category: str, city: str | None) -> Li
         lines = []
         for idx, item in enumerate(chunk, start=start):
             title = item.get("title", "")
+            try:
+                source_host = (urlparse(str(item.get("url", ""))).hostname or "").lower()
+            except ValueError:
+                source_host = ""
             snippet = _truncate(item.get("snippet", ""))
-            lines.append(f"{idx} | {title} | {snippet}")
+            lines.append(f"{idx} | source: {source_host} | {title} | {snippet}")
         block = "\n".join(lines)
         prompt = CLASSIFY.format(
             category=category,

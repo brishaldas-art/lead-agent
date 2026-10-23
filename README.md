@@ -108,7 +108,7 @@ The corresponding research brief is in `data/sponsor_search_brief.txt`. Company-
 2. **Resolve seeds first:** names grounded in a brochure are searched directly; a seed is admitted only when a result matches the name and the domain resembles the brand. A seed lookup never relies on Gemini to invent a URL.
 3. **Filter and classify:** code removes blocked domains/file types/listicles; Gemini classifies batches of up to 30. Names must be grounded in the original title/snippet. If Gemini is unavailable, tightly constrained domain-matched rows can be retained as `needs_review`, never as verified relevance.
 4. **Candidate vs. usable-page counts:** every brand/domain-matched organization can be retained as a review candidate even if its site fails to load. Only organizations with usable official or archived page text count toward `MIN_ORGS` and suppress re-planning. A search snippet is labeled `snippet_only`, not treated as an official page or success.
-5. **Crawl:** attempt every candidate organization's homepage and explicitly extract visible text from semantic/conventionally named footer regions (`<footer>`, `role=contentinfo`, and footer-named ids/classes) whenever its live HTML is available; prioritize same-domain Contact/Contact Us links, then fetch a small number of high-value pages concurrently. Step 4 scans homepage and fetched-page text/HTML (including footer content) for published contact emails; Step 5 checks live official-page text/HTML (including footers) for target-city evidence. When a site has no recognizable footer markup, the full visible fetched HTML is still checked. Requests have bounded retries and a Step 2 discovery time budget. A TTL page cache avoids re-downloading successful pages on immediate reruns.
+5. **Crawl:** attempt every candidate organization's homepage and explicitly extract visible text from semantic/conventionally named footer regions (`<footer>`, `role=contentinfo`, and footer-named ids/classes) whenever its live HTML is available; prioritize same-domain Contact/Contact Us links, then fetch a small number of high-value pages concurrently. Step 4 scans homepage and fetched-page text/HTML (including footer content) for published contact emails; Step 5 checks live official-page text/HTML (including footers) for target-city evidence. When a site has no recognizable footer markup, the full visible fetched HTML is still checked. Optional Playwright support can render client-generated footer content on successful live pages; it is off by default, capped per run, and never retries or bypasses HTTP access denials. Requests have bounded retries and a Step 2 discovery time budget. A TTL page cache avoids re-downloading successful pages on immediate reruns.
 6. **Failure ladder:** transport errors retry; HTTP 401/403/429 are respected; simple URL variants are tried where appropriate; public Wayback snapshots are labelled archival evidence. A richer archived copy may supplement a thin live page, but never replaces it as current proof.
 7. **Re-plan (at most one round by default):** when usable official/archived pages are below `MIN_ORGS`, Gemini may propose up to four new queries. Prompt and validator both require 3–5 words; repeats, URLs and banned terms are rejected.
 8. **Stop conditions:** stop on the run time budget, candidate cap, usable-page cap, call budget, or re-plan limit. The CLI reports candidates separately from organizations with usable pages.
@@ -184,11 +184,25 @@ SEARCH_MAX_RESULTS=10
 SEARCH_CACHE_TTL_HOURS=48
 PAGE_CACHE_TTL_HOURS=72
 OFFLINE=1
+PLAYWRIGHT_RENDER=0
+PLAYWRIGHT_MAX_PAGES_PER_RUN=30
+PLAYWRIGHT_TIMEOUT_MS=8000
 SHEET_ID=
 GOOGLE_CREDENTIALS=credentials.json
 ```
 
 Each model name in `MODEL_FAST` and `MODEL_SMART` is tried in order. When one model reaches its daily limit, the next one in the chain is used.
+
+### Optional JavaScript-rendered footer inspection (Windows)
+
+To inspect footers or contact text inserted by JavaScript, install the optional browser dependency and Chromium:
+
+```powershell
+pip install -r requirements-playwright.txt
+python -m playwright install chromium
+```
+
+Then set `PLAYWRIGHT_RENDER=1` and `OFFLINE=0` in `.env`. Rendering is limited to `PLAYWRIGHT_MAX_PAGES_PER_RUN` pages (default 30) and `PLAYWRIGHT_TIMEOUT_MS` per navigation (default 8000 ms), with a short fixed settle delay. The browser uses no login or cookies; it only runs for pages whose ordinary HTTP fetch succeeded. HTTP 401/403/429 responses are respected and are never retried or bypassed. If Playwright or Chromium is unavailable, discovery falls back to static HTML and records the render status for review.
 
 ## Quota and caching
 

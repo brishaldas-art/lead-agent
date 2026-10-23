@@ -204,13 +204,16 @@ def _page_verification_text(page: dict[str, Any]) -> str:
     """
     parts = [
         _clean_text(page.get("text", "")),
+        _clean_text(page.get("rendered_text", "")),
         _clean_text(page.get("footer_text", "")),
     ]
     raw_html = str(page.get("html", "") or "")
-    if raw_html:
-        marked_footer_text = extract_footer_text(raw_html)
+    rendered_html = str(page.get("rendered_html", "") or "")
+    for footer_html in (raw_html, rendered_html):
+        marked_footer_text = extract_footer_text(footer_html)
         if marked_footer_text:
             parts.append(marked_footer_text)
+    if raw_html:
         try:
             soup = BeautifulSoup(raw_html, "html.parser")
             for node in soup(["script", "style", "noscript", "template"]):
@@ -767,6 +770,9 @@ def _persist_candidate_review(
                     "page_type": _clean_text(page.get("page_type", "")),
                     "footer_text_extracted": bool(_clean_text(page.get("footer_text", ""))),
                     "footer_text_excerpt": _clean_text(page.get("footer_text", ""))[:800],
+                    "render_status": _clean_text(page.get("render_status", "")),
+                    "render_url": _clean_text(page.get("render_url", "")),
+                    "rendered_text_excerpt": _clean_text(page.get("rendered_text", ""))[:800],
                     "text_excerpt": _clean_text(page.get("text", ""))[:800],
                 }
                 for page in (record.get("pages", []) or [])

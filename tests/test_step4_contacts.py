@@ -64,6 +64,20 @@ def test_email_extractors_cover_mailto_obfuscation_and_cloudflare():
     assert decode_cfemail("not-hex") is None
 
 
+def test_playwright_rendered_footer_is_scanned_for_published_emails():
+    page = {
+        "url": "https://acmesolar.in/",
+        "status": "ok",
+        "text": "Static homepage text.",
+        "html": "<html><body><main>About us</main></body></html>",
+        "rendered_text": "Contact info@acmesolar.in",
+        "rendered_html": '<html><body><footer><a href="mailto:info@acmesolar.in">Email</a></footer></body></html>',
+        "footer_text": "Registered office: Kolkata. Email info@acmesolar.in",
+    }
+
+    assert [item.address for item in extract_page_emails(page)] == ["info@acmesolar.in"]
+
+
 def test_footer_text_is_scanned_for_published_emails():
     page = {
         "url": "https://acmesolar.in/",

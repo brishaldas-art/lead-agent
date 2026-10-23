@@ -1,0 +1,2 @@
+# Optional: install this only when JavaScript-rendered page evidence is needed.
+playwright>=1.50,<2

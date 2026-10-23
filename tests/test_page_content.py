@@ -27,6 +27,55 @@ def test_extracts_visible_footer_text_from_common_footer_patterns():
     assert "Fake City" not in text
 
 
+def test_page_from_fetch_uses_same_site_rendered_footer(monkeypatch):
+    monkeypatch.setenv("PLAYWRIGHT_RENDER", "1")
+    monkeypatch.setattr(
+        "agent.discovery.render_page",
+        lambda _url: {
+            "status_code": 200,
+            "final_url": "https://www.example.in/",
+            "html": "<html><body><footer>Office Kolkata; info@example.in</footer></body></html>",
+            "text": "Office Kolkata; info@example.in",
+        },
+    )
+
+    page = _page_from_fetch({
+        "status": "ok",
+        "final_url": "https://example.in/",
+        "text": "Static homepage",
+        "html": "<html><body><main>Static homepage</main></body></html>",
+    })
+
+    assert page["render_status"] == "ok"
+    assert page["render_url"] == "https://www.example.in/"
+    assert "Office Kolkata" in page["footer_text"]
+    assert "info@example.in" in page["rendered_text"]
+
+
+def test_page_from_fetch_rejects_renderer_redirect_to_another_domain(monkeypatch):
+    monkeypatch.setenv("PLAYWRIGHT_RENDER", "1")
+    monkeypatch.setattr(
+        "agent.discovery.render_page",
+        lambda _url: {
+            "status_code": 200,
+            "final_url": "https://unrelated.example/",
+            "html": "<footer>Kolkata info@unrelated.example</footer>",
+            "text": "Kolkata info@unrelated.example",
+        },
+    )
+
+    page = _page_from_fetch({
+        "status": "ok",
+        "final_url": "https://example.in/",
+        "text": "Static homepage",
+        "html": "<html><body><main>Static homepage</main></body></html>",
+    })
+
+    assert page["render_status"] == "rejected_redirect_or_failure"
+    assert page["rendered_html"] == ""
+    assert "unrelated" not in page["footer_text"]
+
+
 def test_every_fetched_homepage_page_record_carries_extracted_footer():
     pages = [
         _page_from_fetch({

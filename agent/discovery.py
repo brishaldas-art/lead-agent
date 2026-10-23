@@ -17,7 +17,7 @@ from agent.filters import filter_results
 from agent.classify import classify_results
 from agent.orgs import build_orgs
 from agent.crawl import score_links
-from agent.fetch import fetch_page
+from agent.fetch import close_page_renderer, fetch_page, render_page
 from agent.page_content import extract_footer_text
 from agent.replan import should_replan, propose_queries
 from agent.evidence import (
@@ -209,21 +209,73 @@ def _enrich_search_results(plan, primary_results: list[dict], search_fn, deadlin
     return extra_results, seed_evidence, enrichment_queries
 
 
+def _same_registered_site(first_url: str, second_url: str) -> bool:
+    """Allow renderer redirects only within the same registrable domain."""
+    try:
+        first, second = _RESULT_DOMAIN(first_url), _RESULT_DOMAIN(second_url)
+        first_domain = f"{first.domain}.{first.suffix}" if first.domain and first.suffix else ""
+        second_domain = f"{second.domain}.{second.suffix}" if second.domain and second.suffix else ""
+        if first_domain and second_domain:
+            return first_domain.casefold() == second_domain.casefold()
+        first_host = (urlparse(first_url).hostname or "").casefold().removeprefix("www.")
+        second_host = (urlparse(second_url).hostname or "").casefold().removeprefix("www.")
+        return bool(first_host and first_host == second_host)
+    except ValueError:
+        return False
+
+
 def _page_from_fetch(result: dict) -> dict:
     url = result.get("final_url") or ""
     raw_html = str(result.get("html", "") or "")
-    footer_text = extract_footer_text(raw_html)
+    static_text = str(result.get("text", "") or "")
+    rendered_html = ""
+    rendered_text = ""
+    rendered_url = ""
+    render_status = "not_enabled"
+
     if str(result.get("status", "")).casefold() == "ok":
-        logger.info("footer inspected for %s: %d visible chars", url, len(footer_text))
+        rendered = render_page(url)
+        if rendered is not None:
+            status_code = int(rendered.get("status_code", 0) or 0)
+            candidate_url = str(rendered.get("final_url", "") or "")
+            if 200 <= status_code < 400 and candidate_url and _same_registered_site(url, candidate_url):
+                rendered_html = str(rendered.get("html", "") or "")
+                rendered_text = str(rendered.get("text", "") or "")
+                rendered_url = candidate_url
+                render_status = "ok"
+            else:
+                if status_code >= 400:
+                    render_status = f"http_{status_code}"
+                else:
+                    render_status = "rejected_redirect_or_failure"
+                logger.info("ignored Playwright result for %s (status=%s)", url, render_status)
+        elif os.getenv("PLAYWRIGHT_RENDER", "0").strip() == "1":
+            render_status = "unavailable"
+
+    footer_text = " ".join(
+        value for value in (
+            extract_footer_text(raw_html),
+            extract_footer_text(rendered_html),
+        ) if value
+    )
+    if str(result.get("status", "")).casefold() == "ok":
+        logger.info(
+            "footer inspected for %s: %d visible chars (render=%s)",
+            url, len(footer_text), render_status,
+        )
     return {
         "url": url,
         "page_type": _page_type(url),
         "status": result.get("status", "dead"),
         "http_status": result.get("http_status"),
         "reason": result.get("reason", "") or "",
-        "text": result.get("text", "") or "",
+        "text": static_text,
         "html": raw_html,
         "footer_text": footer_text,
+        "rendered_html": rendered_html,
+        "rendered_text": rendered_text,
+        "render_status": render_status,
+        "render_url": rendered_url,
     }
 
 
@@ -566,6 +618,7 @@ def run_discovery(
 
     pages_total = sum(len(r["pages"]) for r in records)
     logger.info("discovery done: candidates=%d usable_official_page_orgs=%d pages=%d", len(records), usable_count(), pages_total)
+    close_page_renderer()
     return records
 
 

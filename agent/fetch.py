@@ -2,6 +2,7 @@
 No LLM is used; dead pages do not stop the pipeline.
 """
 
+import atexit
 import hashlib
 import json
 import logging
@@ -19,6 +20,11 @@ _logger = logging.getLogger(__name__)
 
 USER_AGENT = "Mozilla/5.0 (compatible; LeadAgent/1.0)"
 TIMEOUT = 4.0
+_RENDER_MANAGER = None
+_RENDER_BROWSER = None
+_RENDER_FAILURE: str | None = None
+_RENDERED_PAGE_COUNT = 0
+_RENDER_LIMIT_LOGGED = False
 CACHE_DIR = Path(os.getenv("PAGE_CACHE_DIR", "outputs/.page_cache"))
 PAGE_CACHE_TTL_SECONDS = max(60, int(float(os.getenv("PAGE_CACHE_TTL_HOURS", "72")) * 3600))
 
@@ -91,6 +97,103 @@ def _quality_reason(text: str) -> str:
     if any(marker in lowered for marker in placeholder_markers):
         reasons.append("placeholder text detected")
     return "; ".join(reasons)
+
+
+def render_page(url: str) -> dict[str, Any] | None:
+    """Optionally render a page with ordinary Chromium for JS-inserted content.
+
+    Rendering is opt-in, bounded per run, and only used for pages that already
+    returned successfully through the normal HTTP fetch. It does not retry
+    denied pages, use cookies/credentials, or bypass access controls.
+    """
+    global _RENDER_MANAGER, _RENDER_BROWSER, _RENDER_FAILURE
+    global _RENDERED_PAGE_COUNT, _RENDER_LIMIT_LOGGED
+
+    if os.getenv("PLAYWRIGHT_RENDER", "0").strip() != "1" or os.getenv("OFFLINE", "0") == "1":
+        return None
+    try:
+        max_pages = max(0, min(int(os.getenv("PLAYWRIGHT_MAX_PAGES_PER_RUN", "30")), 100))
+        timeout_ms = max(1000, min(int(os.getenv("PLAYWRIGHT_TIMEOUT_MS", "8000")), 30000))
+    except ValueError:
+        max_pages, timeout_ms = 30, 8000
+    if _RENDERED_PAGE_COUNT >= max_pages:
+        if not _RENDER_LIMIT_LOGGED:
+            _logger.info("Playwright render cap reached (%d pages)", max_pages)
+            _RENDER_LIMIT_LOGGED = True
+        return None
+    if _RENDER_FAILURE:
+        return None
+
+    try:
+        if _RENDER_BROWSER is None:
+            from playwright.sync_api import sync_playwright
+            _RENDER_MANAGER = sync_playwright().start()
+            _RENDER_BROWSER = _RENDER_MANAGER.chromium.launch(headless=True)
+        _RENDERED_PAGE_COUNT += 1
+        context = _RENDER_BROWSER.new_context(
+            java_script_enabled=True,
+            accept_downloads=False,
+            service_workers="block",
+        )
+        try:
+            page = context.new_page()
+            response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            status_code = int(response.status) if response is not None else 0
+            final_url = str(page.url or url)
+            if status_code in {401, 403, 429}:
+                _logger.info("Playwright respected HTTP %d for %s; no retry or bypass", status_code, url)
+                return {"status_code": status_code, "final_url": final_url, "html": "", "text": ""}
+            if status_code >= 400 or status_code == 0:
+                return {"status_code": status_code, "final_url": final_url, "html": "", "text": ""}
+            # Allow a brief, fixed amount of time for client-rendered footer
+            # components, without waiting on analytics or network-idle events.
+            page.wait_for_timeout(min(1000, max(250, timeout_ms // 8)))
+            try:
+                visible_text = page.locator("body").inner_text(timeout=1500)
+            except Exception:
+                visible_text = ""
+            return {
+                "status_code": status_code,
+                "final_url": final_url,
+                "html": page.content(),
+                "text": visible_text,
+            }
+        finally:
+            context.close()
+    except Exception as exc:
+        if _RENDER_BROWSER is None:
+            _RENDER_FAILURE = type(exc).__name__
+            _logger.warning(
+                "Playwright rendering unavailable (%s); continuing with static HTML",
+                _RENDER_FAILURE,
+            )
+        else:
+            _logger.info("Playwright render failed for %s: %s", url, type(exc).__name__)
+        return None
+
+
+def close_page_renderer() -> None:
+    """Release the optional browser and reset per-run renderer limits."""
+    global _RENDER_MANAGER, _RENDER_BROWSER, _RENDER_FAILURE
+    global _RENDERED_PAGE_COUNT, _RENDER_LIMIT_LOGGED
+    try:
+        if _RENDER_BROWSER is not None:
+            _RENDER_BROWSER.close()
+    except Exception:
+        pass
+    try:
+        if _RENDER_MANAGER is not None:
+            _RENDER_MANAGER.stop()
+    except Exception:
+        pass
+    _RENDER_MANAGER = None
+    _RENDER_BROWSER = None
+    _RENDER_FAILURE = None
+    _RENDERED_PAGE_COUNT = 0
+    _RENDER_LIMIT_LOGGED = False
+
+
+atexit.register(close_page_renderer)
 
 
 def _wayback(url: str) -> Optional[str]:
@@ -235,4 +338,4 @@ def fetch_page(url: str) -> Dict[str, Any]:
     return result
 
 
-__all__ = ["fetch_page"]
+__all__ = ["fetch_page", "render_page", "close_page_renderer"]

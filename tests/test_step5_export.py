@@ -317,6 +317,25 @@ def test_legacy_social_profile_contact_is_removed_from_verified_exports():
             assert connection.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 1
 
 
+def test_rendered_javascript_footer_can_confirm_official_city():
+    outcome, records, people = sample_inputs()
+    records[0]["pages"][0]["text"] = "Static homepage without location text."
+    records[0]["pages"][0]["html"] = "<html><body><main>About us</main></body></html>"
+    records[0]["pages"][0]["rendered_text"] = "Registered office: Kolkata, West Bengal"
+    records[0]["pages"][0]["rendered_html"] = (
+        "<html><body><footer>Registered office: Kolkata, West Bengal</footer></body></html>"
+    )
+    with tempfile.TemporaryDirectory() as temp_dir:
+        result = export_verified_leads(
+            outcome, records, output_dir=Path(temp_dir), sheet_id="",
+            credentials_path="", people_result=people,
+        )
+        assert result.rows_added == 1
+        with Path(result.csv_path).open(encoding="utf-8-sig", newline="") as stream:
+            rows = list(csv.reader(stream))
+        assert rows[1][2] == "Kolkata"
+
+
 def test_unconfirmed_location_drops_row_and_does_not_call_sheets():
     outcome, records, people = sample_inputs()
     records[0]["pages"][0]["text"] = "Acme Solar office address: West Bengal."

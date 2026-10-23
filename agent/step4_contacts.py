@@ -205,12 +205,18 @@ def extract_page_emails(page: dict[str, Any]) -> list[EmailEvidence]:
     """Extract email evidence from visible text, HTML, mailto, and cfemail."""
     url = str(page.get("url", "") or "")
     status = str(page.get("status", "unknown")).casefold()
-    html_text = str(page.get("html", "") or "")
+    html_documents = [
+        str(page.get("html", "") or ""),
+        str(page.get("rendered_html", "") or ""),
+    ]
     visible_text = str(page.get("text", "") or "")
-    soup = BeautifulSoup(html_text, "html.parser") if html_text else None
+    rendered_text = str(page.get("rendered_text", "") or "")
     candidates: list[str] = []
 
-    if soup:
+    for html_document in html_documents:
+        if not html_document:
+            continue
+        soup = BeautifulSoup(html_document, "html.parser")
         for anchor in soup.find_all("a", href=True):
             href = unquote(str(anchor.get("href", "")))
             if href.casefold().startswith("mailto:"):
@@ -222,7 +228,9 @@ def extract_page_emails(page: dict[str, Any]) -> list[EmailEvidence]:
                 candidates.append(decoded)
 
     footer_text = str(page.get("footer_text", "") or "")
-    searchable = _deobfuscate_text(visible_text + "\n" + footer_text + "\n" + html_text)
+    searchable = _deobfuscate_text(
+        "\n".join([visible_text, rendered_text, footer_text, *html_documents])
+    )
     candidates.extend(EMAIL_RE.findall(searchable))
     out: list[EmailEvidence] = []
     seen: set[str] = set()

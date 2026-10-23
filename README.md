@@ -159,7 +159,8 @@ python -m tests.test_step5_export
 - Company runs (`Sponsor`, `Both`) use only the industries and city. Words such as "sponsor", "college", "fest", "delegation" and "student" are never added.
 - College runs (`College Delegation`) use college templates.
 - Every query is at most 5 words, because longer queries return few or no results.
-- At most 10 queries per plan.
+- At most 10 queries per plan. Digital-sector plans include related search phrases (for example, software, IT consulting, and managed IT services) to improve discovery recall without relaxing official-site verification.
+- DuckDuckGo returns up to 10 results per query by default (`SEARCH_MAX_RESULTS` can be set from 1 to 20). Search caches are refreshed when this limit changes.
 
 ## Configuration (`.env`)
 
@@ -179,6 +180,7 @@ MAX_CANDIDATES=40
 MAX_SEED_ORGS=10
 MAX_ENRICHMENT_SEEDS=4
 TIME_BUDGET_MIN=8
+SEARCH_MAX_RESULTS=10
 SEARCH_CACHE_TTL_HOURS=48
 PAGE_CACHE_TTL_HOURS=72
 OFFLINE=1

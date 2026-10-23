@@ -19,7 +19,10 @@ _logger = logging.getLogger("agent")
 CACHE_DIR = Path("outputs/.search_cache")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-MAX_RESULTS = 8
+# More results per query improves recall across a city/industry search. Keep it
+# bounded and configurable because DDG responses and downstream classification
+# still consume time and model budget.
+MAX_RESULTS = min(max(int(os.getenv("SEARCH_MAX_RESULTS", "10")), 1), 20)
 DELAY_SECONDS = 1.5
 CACHE_TTL_SECONDS = max(60, int(float(os.getenv("SEARCH_CACHE_TTL_HOURS", "48")) * 3600))
 
@@ -42,10 +45,15 @@ def run_query(query: str) -> List[Dict]:
             if isinstance(payload, dict):
                 cached = payload.get("results", [])
                 cached_at = float(payload.get("cached_at", cache_file.stat().st_mtime))
+                cached_limit = payload.get("max_results")
             else:  # read legacy cache files created before TTL metadata existed
                 cached = payload
                 cached_at = cache_file.stat().st_mtime
-            fresh = time.time() - cached_at <= CACHE_TTL_SECONDS
+                cached_limit = None
+            fresh = (
+                time.time() - cached_at <= CACHE_TTL_SECONDS
+                and cached_limit == MAX_RESULTS
+            )
             if fresh and cached:
                 return cached
             # Empty results are not useful cache entries; stale results must be
@@ -77,7 +85,10 @@ def run_query(query: str) -> List[Dict]:
         })
     if results:
         try:
-            cache_file.write_text(json.dumps({"cached_at": time.time(), "results": results}), encoding="utf-8")
+            cache_file.write_text(
+                json.dumps({"cached_at": time.time(), "max_results": MAX_RESULTS, "results": results}),
+                encoding="utf-8",
+            )
         except Exception:
             pass
     return results

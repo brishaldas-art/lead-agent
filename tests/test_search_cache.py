@@ -14,6 +14,7 @@ class FailingDDGS:
 
 class SuccessfulDDGS:
     def text(self, query, max_results):
+        self.requested_max_results = max_results
         return [{
             "href": "https://example.org/",
             "title": "Example Technology",
@@ -47,6 +48,24 @@ def test_stale_nonempty_search_cache_expires():
             with patch.object(search, "DDGS", return_value=SuccessfulDDGS()):
                 rows = search.run_query(query)
             assert rows[0]["url"] == "https://example.org/"
+
+
+def test_cache_with_smaller_result_limit_is_refreshed():
+    query = "IT services firms Kolkata"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        with patch.object(search, "CACHE_DIR", Path(temp_dir)), patch.object(search, "DELAY_SECONDS", 0):
+            cache_path = search._cache_path(query)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(
+                '{"cached_at": 9999999999, "max_results": 8, '
+                '"results": [{"url": "https://old.example/"}]}',
+                encoding="utf-8",
+            )
+            fake = SuccessfulDDGS()
+            with patch.object(search, "DDGS", return_value=fake):
+                rows = search.run_query(query)
+            assert rows[0]["url"] == "https://example.org/"
+            assert fake.requested_max_results == search.MAX_RESULTS
 
 
 def test_previously_cached_empty_search_is_not_a_permanent_miss():

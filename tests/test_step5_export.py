@@ -164,10 +164,10 @@ def test_local_csv_sqlite_audit_and_deduplication_are_idempotent():
             review_rows = list(csv.reader(stream))
         assert tuple(review_rows[0]) == LEAD_ALL_HEADERS
         assert len(review_rows) == 2
-        assert review_rows[1][7] == "Confirmed on live official page"
-        assert "Asha Banerjee" in review_rows[1][12]
-        assert "info@acmesolar.in" in review_rows[1][13]
-        assert "asha.banerjee@acmesolar.in" in review_rows[1][14]
+        assert review_rows[1] == [
+            "Acme Solar", "Sponsor", "Kolkata", "Asha Banerjee, Head of CSR",
+            "asha.banerjee@acmesolar.in", "Verified", "",
+        ]
 
         with sqlite3.connect(first.database_path) as connection:
             assert connection.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 1
@@ -229,6 +229,10 @@ def test_company_level_contact_is_exported_with_explicit_label():
         assert result.rows_added == 0
         assert len(result.dropped) == 1
         assert "not confirmed" in result.dropped[0]["reason"]
+        with Path(result.lead_all_csv_path).open(encoding="utf-8-sig", newline="") as stream:
+            review_rows = list(csv.reader(stream))
+        assert review_rows[1][5] == "Contact Verified; Lead Not Exported"
+        assert "organization city is not confirmed" in review_rows[1][6]
 
 
 def test_city_alias_confirms_official_location():
@@ -243,7 +247,7 @@ def test_city_alias_confirms_official_location():
         assert result.rows_added == 1
         with Path(result.lead_all_csv_path).open(encoding="utf-8-sig", newline="") as stream:
             rows = list(csv.reader(stream))
-        assert rows[1][7] == "Confirmed on live official page"
+        assert rows[1][6] == ""
 
 
 def test_unconfirmed_location_drops_row_and_does_not_call_sheets():
@@ -319,7 +323,8 @@ def test_quota_fallback_candidate_is_not_exported_as_accepted_lead():
         with Path(result.lead_all_csv_path).open(encoding="utf-8-sig", newline="") as stream:
             rows = list(csv.reader(stream))
         assert len(rows) == 2
-        assert rows[1][6] == "llm_unavailable_needs_review"
+        assert rows[1][5] == "Contact Verified; Lead Not Exported"
+        assert "organization relevance is awaiting human review" in rows[1][6]
 
 
 def test_review_csv_keeps_candidate_with_no_pages_or_contact():
@@ -350,9 +355,12 @@ def test_review_csv_keeps_candidate_with_no_pages_or_contact():
             rows = list(csv.reader(stream))
         assert len(rows) == 2
         assert rows[1][0] == "Sample Systems"
-        assert rows[1][4] == "https://samplesystems.in/"
-        assert rows[1][5] == "no_page_available"
-        assert "no usable official-site pages" in rows[1][-1]
+        assert rows[1][2] == "Kolkata"
+        assert rows[1][3] == ""
+        assert rows[1][4] == ""
+        assert rows[1][5] == "Not Verified"
+        assert "no usable official-site pages" in rows[1][6]
+        assert "sponsorship" not in rows[1][6].casefold()
         with sqlite3.connect(result.database_path) as connection:
             assert connection.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 0
             assert connection.execute("SELECT COUNT(*) FROM candidate_review").fetchone()[0] == 1

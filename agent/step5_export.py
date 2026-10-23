@@ -38,24 +38,8 @@ MAIN_HEADERS = (
     "Verification Status",
 )
 LEAD_ALL_HEADERS = (
-    "Organization Name",
-    "Category",
-    "Target Location",
-    "Root Domain",
-    "Homepage",
-    "Candidate Status",
-    "Classification Status",
-    "Official Location Status",
-    "Evidence Summary Status",
-    "Official Location Evidence URLs",
-    "Direct Sponsorship Evidence URLs",
-    "Related CSR Evidence URLs",
-    "Decision-Maker Candidates",
-    "Observed Public Contacts",
-    "Verified Contacts",
-    "Discovery-Only Evidence",
-    "Page Evidence",
-    "Review Reasons",
+    *MAIN_HEADERS,
+    "Why Not Verified",
 )
 AUDIT_HEADERS = (
     "Organization Name",
@@ -328,28 +312,115 @@ def _csv_safe(value: Any) -> str:
     return text
 
 
+def _json_list(value: Any) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(value or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _why_not_verified(reasons: list[Any], *, is_exported: bool, observed_status: str = "") -> str:
+    if is_exported:
+        return ""
+    # Sponsorship evidence is review context, not a Step 5 acceptance gate.
+    non_gating_phrases = (
+        "direct sponsorship is not confirmed",
+        "no direct sponsorship evidence",
+    )
+    filtered = [
+        _clean_text(reason) for reason in reasons
+        if _clean_text(reason)
+        and not any(phrase in _clean_text(reason).casefold() for phrase in non_gating_phrases)
+    ]
+    if observed_status and not any("observed" in reason.casefold() for reason in filtered):
+        filtered.append(observed_status)
+    if not filtered:
+        filtered.append("No verified contact or qualifying export evidence was available.")
+    return "; ".join(dict.fromkeys(filtered))
+
+
 def _write_lead_all_csv(database_path: Path, path: Path) -> None:
     columns = (
-        "organization_name", "category", "target_location", "root_domain", "homepage",
-        "candidate_status", "classification_status", "verification_status", "official_location_evidence_json",
-        "direct_sponsorship_evidence_json", "related_csr_evidence_json",
+        "organization_name", "category", "target_location", "root_domain",
         "step3_people_json", "observed_contacts_json", "step4_contacts_json",
-        "discovery_only_evidence_json", "pages_json", "review_reasons_json",
+        "review_reasons_json",
     )
     with sqlite3.connect(database_path) as connection:
         _create_tables(connection)
         rows = connection.execute(
             f"SELECT {', '.join(columns)} FROM candidate_review ORDER BY organization_name COLLATE NOCASE"
         ).fetchall()
+        accepted_keys = {
+            (str(domain), str(channel_key))
+            for domain, channel_key in connection.execute(
+                "SELECT root_domain, normalized_contact_key FROM leads"
+            ).fetchall()
+        }
     temporary = path.with_suffix(path.suffix + ".tmp")
     with temporary.open("w", newline="", encoding="utf-8-sig") as stream:
         writer = csv.writer(stream)
         writer.writerow(LEAD_ALL_HEADERS)
-        # Keep one row per organization; JSON-valued cells preserve all source
-        # lists without multiplying contacts into misleading duplicate leads.
+        # Keep one compact row per organization; the SQLite review table retains
+        # the full source, evidence, and audit detail behind this summary.
         for row in rows:
-            location_urls = json.loads(row[8] or "[]")
-            display_row = [*row[:7], "Confirmed on live official page" if location_urls else "Unverified", *row[7:]]
+            org_name, category, location, domain, people_json, observed_json, contacts_json, reasons_json = row
+            people = _json_list(people_json)
+            observed = _json_list(observed_json)
+            contacts = _json_list(contacts_json)
+            reasons = _json_list(reasons_json)
+            contact = contacts[0] if contacts else {}
+            observed_contact = observed[0] if observed else {}
+            observed_status = _clean_text(observed_contact.get("verification_status", ""))
+
+            if contact:
+                person_text = ", ".join(part for part in (
+                    _clean_text(contact.get("person_name", "")),
+                    _clean_text(contact.get("person_role", "")),
+                ) if part)
+                channel = _clean_text(contact.get("channel", ""))
+                channel_type = _clean_text(contact.get("channel_type", ""))
+                channel_key = _normalize_channel(channel, channel_type)
+                is_exported = (str(domain), channel_key) in accepted_keys
+                verification_status = (
+                    _clean_text(contact.get("status", "Verified"))
+                    if is_exported
+                    else "Contact Verified; Lead Not Exported"
+                )
+            else:
+                person_text = ""
+                channel = ""
+                channel_key = ""
+                is_exported = False
+                verification_status = "Not Verified"
+                if observed_contact:
+                    channel = _clean_text(observed_contact.get("channel", ""))
+                    observed_status = observed_status or "Observed contact; not verified"
+                if people:
+                    person = people[0]
+                    person_text = ", ".join(part for part in (
+                        _clean_text(person.get("person_name", "")),
+                        _clean_text(person.get("person_role", "")),
+                    ) if part)
+                elif observed_contact and "generic inbox" in observed_status.casefold():
+                    person_text = "General Contact, Company Contact"
+                elif observed_contact:
+                    person_text = "Published Contact, Company Contact"
+
+            why = _why_not_verified(
+                reasons,
+                is_exported=is_exported,
+                observed_status=observed_status if not contact else "",
+            )
+            display_row = [
+                org_name,
+                category,
+                location,
+                person_text,
+                channel,
+                verification_status,
+                why,
+            ]
             writer.writerow([_csv_safe(value) for value in display_row])
     temporary.replace(path)
 

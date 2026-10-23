@@ -1,11 +1,13 @@
-"""Step 4: extract and verify one conservative contact per grounded person.
+"""Step 4: extract and verify conservative official-page contact channels.
 
-This module never asks an LLM to write or validate contact data. An email must
-be present on a live company-domain page, match the named person, pass syntax
-validation and have MX records; pattern-derived email addresses require at least
-two consistent observed examples. Profile links are accepted only when linked
-from a live official page and a direct HTTP 200 response matches the person or
-organization. Network functions are injectable for offline tests.
+This module never asks an LLM to write or validate contact data. Person-specific
+emails must be present on a live company-domain page, match the grounded person,
+pass syntax validation and have MX records; pattern-derived addresses require
+multiple observed examples. When no person-specific channel passes, a published
+shared company inbox may qualify as `General Contact, Company Contact`, provided
+it is on a live official page and its domain has MX records. Profile links are
+accepted only when linked from a live official page and an ordinary HTTP 200
+response matches the person or organization. Network functions are injectable.
 """
 
 from __future__ import annotations
@@ -48,6 +50,8 @@ GENERIC_DEFAULTS = {
     "jobs", "recruitment", "newsletter", "notification", "notifications", "updates",
     "admission", "admissions", "registrar", "accounts", "billing", "press", "media",
     "feedback", "service", "services", "team", "marketing", "communications",
+    "partnership", "partnerships", "sponsor", "sponsorship", "business", "general",
+    "connect", "corporate", "outreach",
 }
 HONORIFICS = {"mr", "mrs", "ms", "miss", "dr", "prof", "professor", "shri", "smt"}
 NAME_STOPWORDS = {"the", "of", "for", "and", "at", "in"}
@@ -403,6 +407,62 @@ def _find_verified_profile(
     return None
 
 
+def _verified_company_level_contact(
+    org: OrgCandidate,
+    pages: list[dict[str, Any]],
+    generic_inboxes: set[str],
+    mx_lookup: Callable[[str], Any],
+    mx_cache: dict[str, bool],
+) -> VerifiedLead | None:
+    """Verify a published shared company inbox without inventing a person."""
+    candidates: list[EmailEvidence] = []
+    for page in pages:
+        if str(page.get("status", "")).casefold() != "ok" or not _page_is_official_domain(page, org.domain):
+            continue
+        for item in extract_page_emails(page):
+            if not _same_org_domain(_email_domain(item.address), org.domain):
+                continue
+            if is_generic_inbox(item.address, generic_inboxes):
+                candidates.append(item)
+    priority = {
+        "partnership": 0, "partnerships": 0, "sponsor": 1, "sponsorship": 1,
+        "business": 2, "corporate": 2, "outreach": 3, "connect": 3,
+        "sales": 4, "contact": 5, "info": 6,
+    }
+    candidates.sort(key=lambda item: (
+        "contact" not in item.source_url.casefold(),
+        priority.get(_normalize_email(item.address).split("@", 1)[0].split("+", 1)[0], 10),
+        item.source_url,
+        item.address,
+    ))
+    for item in candidates:
+        domain = _email_domain(item.address)
+        if not _mx_passes(domain, mx_lookup, mx_cache):
+            continue
+        person = Person(
+            full_name="General Contact",
+            role="Company Contact",
+            source_url=item.source_url,
+            role_score=0.0,
+        )
+        contact = Contact(
+            channel=item.address,
+            channel_type="email",
+            status="Verified",
+            evidence_url=item.source_url,
+            supporting_urls=[item.source_url],
+            checks_passed=[
+                "published_on_live_official_page",
+                "company_level_shared_inbox",
+                "same_org_domain",
+                "syntax_valid",
+                "mx_ok",
+            ],
+        )
+        return VerifiedLead(org=org, person=person, contact=contact)
+    return None
+
+
 def _personal_local_pattern(address: str) -> str | None:
     local = _normalize_email(address).split("@", 1)[0].split("+", 1)[0].casefold()
     if is_generic_inbox(address):
@@ -617,6 +677,28 @@ def verify_contacts(
             else:
                 reason = "no verifiable person-specific email or matching profile link"
             outcome.dropped.append({"org_name": org.org_name, "domain": org.domain, "reason": reason})
+
+    # If no person-specific channel passed, a live official shared inbox may
+    # still be a valid organization-level route. Keep its identity explicit;
+    # never label it as a named decision-maker.
+    verified_domains = {str(item.org.domain).casefold() for item in outcome.verified}
+    for domain, (stored_org, pages) in org_pages.items():
+        if domain.casefold() in verified_domains:
+            continue
+        org = stored_org if isinstance(stored_org, OrgCandidate) else OrgCandidate.model_validate(stored_org)
+        general_contact = _verified_company_level_contact(
+            org, pages, generic_inboxes, mx_lookup, mx_cache
+        )
+        if general_contact is not None:
+            outcome.verified.append(general_contact)
+            verified_domains.add(domain.casefold())
+
+    # A general contact supersedes a person-specific-contact failure for the
+    # same organization; leave unrelated Step 4 drop reasons intact.
+    outcome.dropped = [
+        item for item in outcome.dropped
+        if str(item.get("domain", "")).casefold() not in verified_domains
+    ]
     return outcome
 
 

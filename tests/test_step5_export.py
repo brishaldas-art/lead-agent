@@ -176,6 +176,61 @@ def test_local_csv_sqlite_audit_and_deduplication_are_idempotent():
             assert connection.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0] == 2
 
 
+def test_company_level_contact_is_exported_with_explicit_label():
+    outcome, records, _people = sample_inputs()
+    source_page = "https://acmesolar.in/contact"
+    original = outcome.verified[0]
+    general_person = Person(
+        full_name="General Contact",
+        role="Company Contact",
+        source_url=source_page,
+        role_score=0,
+    )
+    general_contact = Contact(
+        channel="info@acmesolar.in",
+        channel_type="email",
+        status="Verified",
+        evidence_url=source_page,
+        supporting_urls=[source_page],
+        checks_passed=[
+            "published_on_live_official_page",
+            "company_level_shared_inbox",
+            "same_org_domain",
+            "syntax_valid",
+            "mx_ok",
+        ],
+    )
+    outcome.verified = [VerifiedLead(org=original.org, person=general_person, contact=general_contact)]
+    people = SimpleNamespace(identified=[], dropped=[])
+    with tempfile.TemporaryDirectory() as temp_dir:
+        result = export_verified_leads(
+            outcome, records, output_dir=Path(temp_dir), sheet_id="",
+            credentials_path="", people_result=people,
+        )
+        assert result.rows_added == 1
+        with Path(result.csv_path).open(encoding="utf-8-sig", newline="") as stream:
+            rows = list(csv.reader(stream))
+        assert rows[1] == [
+            "Acme Solar", "Sponsor", "Kolkata", "General Contact, Company Contact",
+            "info@acmesolar.in", "Verified",
+        ]
+        with Path(result.audit_csv_path).open(encoding="utf-8-sig", newline="") as stream:
+            audit_rows = list(csv.reader(stream))
+        assert audit_rows[1][2:4] == ["General Contact", "Company Contact"]
+        assert "company_level_shared_inbox" in audit_rows[1][11]
+
+    # A verified shared inbox does not bypass Step 5's official-page city gate.
+    records[0]["pages"][0]["text"] = "Acme Solar office in West Bengal."
+    with tempfile.TemporaryDirectory() as temp_dir:
+        result = export_verified_leads(
+            outcome, records, output_dir=Path(temp_dir), sheet_id="",
+            credentials_path="", people_result=people,
+        )
+        assert result.rows_added == 0
+        assert len(result.dropped) == 1
+        assert "not confirmed" in result.dropped[0]["reason"]
+
+
 def test_city_alias_confirms_official_location():
     outcome, records, people = sample_inputs()
     records[0]["pages"][0]["text"] = "Registered office: Calcutta, West Bengal."

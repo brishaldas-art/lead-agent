@@ -41,3 +41,12 @@ services
 team
 marketing
 communications
+partnership
+partnerships
+sponsor
+sponsorship
+business
+general
+connect
+corporate
+outreach

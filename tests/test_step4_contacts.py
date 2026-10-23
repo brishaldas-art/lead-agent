@@ -136,6 +136,28 @@ def test_generic_or_foreign_email_is_rejected_before_profile_fallback():
     assert is_generic_inbox("no.reply@acmesolar.in")
 
 
+def test_company_level_contact_fallback_when_no_person_specific_channel_passes():
+    org = make_org()
+    person = make_person()
+    page = {
+        "url": "https://acmesolar.in/contact",
+        "status": "ok",
+        "text": "Asha Banerjee is on our team. Contact partnerships@acmesolar.in.",
+        "html": '<a href="mailto:partnerships@acmesolar.in">Partnerships</a>',
+    }
+    step3, records = make_pipeline(org, person, [page])
+    result = verify_contacts(
+        step3,
+        records,
+        mx_lookup=lambda domain: domain == "acmesolar.in",
+        profile_fetch_fn=lambda _url: None,
+    )
+    assert len(result.verified) == 1
+    assert result.verified[0].person.full_name == "General Contact"
+    assert result.verified[0].person.role == "Company Contact"
+    assert result.verified[0].contact.channel == "partnerships@acmesolar.in"
+
+
 def test_email_without_mx_is_not_marked_verified():
     org = make_org()
     person = make_person()
@@ -250,7 +272,7 @@ def test_wayback_only_emails_and_unmatched_contacts_are_not_verified():
     assert "no live official-domain pages" in result.dropped[0]["reason"]
 
 
-def test_public_generic_contact_is_retained_for_review_without_a_person():
+def test_public_generic_contact_qualifies_as_company_level_without_a_person():
     org = make_org()
     page = {
         "url": "https://acmesolar.in/contact",
@@ -261,13 +283,50 @@ def test_public_generic_contact_is_retained_for_review_without_a_person():
     result = verify_contacts(
         Step3Outcome(),
         [{"org": org, "pages": [page]}],
-        mx_lookup=lambda _domain: (_ for _ in ()).throw(AssertionError("no MX check expected")),
+        mx_lookup=lambda domain: domain == "acmesolar.in",
         profile_fetch_fn=lambda _url: None,
     )
-    assert result.verified == []
+    assert len(result.verified) == 1
+    lead = result.verified[0]
+    assert lead.person.full_name == "General Contact"
+    assert lead.person.role == "Company Contact"
+    assert lead.contact.channel == "info@acmesolar.in"
+    assert lead.contact.status == "Verified"
+    assert str(lead.contact.evidence_url) == page["url"]
+    assert {
+        "published_on_live_official_page",
+        "company_level_shared_inbox",
+        "same_org_domain",
+        "syntax_valid",
+        "mx_ok",
+    }.issubset(lead.contact.checks_passed)
+    assert result.dropped == []
     assert result.observed_contacts[0]["channel"] == "info@acmesolar.in"
     assert "generic inbox" in result.observed_contacts[0]["verification_status"]
     assert result.observed_contacts[0]["evidence_urls"] == [page["url"]]
+
+
+def test_company_level_contact_fallback_requires_live_same_domain_and_mx():
+    org = make_org()
+    official_page = {
+        "url": "https://acmesolar.in/contact",
+        "status": "ok",
+        "text": "Contact our partnerships team at partnerships@acmesolar.in",
+        "html": '<a href="mailto:partnerships@acmesolar.in">Partnerships</a>',
+    }
+    for page, mx_lookup in [
+        ({**official_page, "status": "wayback"}, lambda _domain: True),
+        ({**official_page, "html": '<a href="mailto:info@other.org">Contact</a>',
+          "text": "Contact info@other.org"}, lambda _domain: True),
+        (official_page, lambda _domain: False),
+    ]:
+        result = verify_contacts(
+            Step3Outcome(),
+            [{"org": org, "pages": [page]}],
+            mx_lookup=mx_lookup,
+            profile_fetch_fn=lambda _url: None,
+        )
+        assert result.verified == []
 
 
 def test_email_name_variants_are_exact_after_normalization():

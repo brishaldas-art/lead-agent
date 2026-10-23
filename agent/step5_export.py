@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import time
+from contextlib import closing
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -346,7 +347,7 @@ def _write_lead_all_csv(database_path: Path, path: Path) -> None:
         "step3_people_json", "observed_contacts_json", "step4_contacts_json",
         "review_reasons_json",
     )
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection:
         _create_tables(connection)
         rows = connection.execute(
             f"SELECT {', '.join(columns)} FROM candidate_review ORDER BY organization_name COLLATE NOCASE"
@@ -543,7 +544,7 @@ def _persist_local(
     database_path = output_dir / "leads.db"
     added = 0
     duplicates = 0
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection, connection:
         connection.execute("PRAGMA foreign_keys = ON")
         _create_tables(connection)
         prior = _read_stored(connection)
@@ -667,7 +668,7 @@ def _persist_candidate_review(
     run_location = _clean_text(run_context.get("target_location", ""))
     seen_domains: set[str] = set()
 
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection, connection:
         _create_tables(connection)
         for record in discovery_records:
             org = record.get("org")

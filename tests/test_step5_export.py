@@ -3,6 +3,7 @@
 import csv
 import sqlite3
 import tempfile
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -169,7 +170,7 @@ def test_local_csv_sqlite_audit_and_deduplication_are_idempotent():
             "asha.banerjee@acmesolar.in", "Verified", "",
         ]
 
-        with sqlite3.connect(first.database_path) as connection:
+        with closing(sqlite3.connect(first.database_path)) as connection:
             assert connection.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 1
             assert connection.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 1
             assert connection.execute("SELECT COUNT(*) FROM candidate_review").fetchone()[0] == 1
@@ -268,7 +269,7 @@ def test_unconfirmed_location_drops_row_and_does_not_call_sheets():
         assert len(result.dropped) == 1
         assert "not confirmed" in result.dropped[0]["reason"]
         assert result.review_candidates == 1
-        with sqlite3.connect(result.database_path) as connection:
+        with closing(sqlite3.connect(result.database_path)) as connection:
             assert connection.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 0
             assert connection.execute("SELECT COUNT(*) FROM candidate_review").fetchone()[0] == 1
             assert connection.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0] == 1
@@ -294,7 +295,7 @@ def test_empty_run_still_records_a_run_in_sqlite():
         assert result.run_id == 1
         with Path(result.lead_all_csv_path).open(encoding="utf-8-sig", newline="") as stream:
             assert tuple(next(csv.reader(stream))) == LEAD_ALL_HEADERS
-        with sqlite3.connect(result.database_path) as connection:
+        with closing(sqlite3.connect(result.database_path)) as connection:
             assert connection.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 0
             assert connection.execute("SELECT COUNT(*) FROM candidate_review").fetchone()[0] == 0
             run = connection.execute(
@@ -361,7 +362,7 @@ def test_review_csv_keeps_candidate_with_no_pages_or_contact():
         assert rows[1][5] == "Not Verified"
         assert "no usable official-site pages" in rows[1][6]
         assert "sponsorship" not in rows[1][6].casefold()
-        with sqlite3.connect(result.database_path) as connection:
+        with closing(sqlite3.connect(result.database_path)) as connection:
             assert connection.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 0
             assert connection.execute("SELECT COUNT(*) FROM candidate_review").fetchone()[0] == 1
 

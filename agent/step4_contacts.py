@@ -1,13 +1,13 @@
 """Step 4: extract and verify conservative official-page contact channels.
 
 This module never asks an LLM to write or validate contact data. Person-specific
-emails must be present on a live company-domain page, match the grounded person,
-pass syntax validation and have MX records; pattern-derived addresses require
-multiple observed examples. When no person-specific channel passes, a published
-shared company inbox may qualify as `General Contact, Company Contact`, provided
-it is published on a live official page and its domain is either the company
-domain or a known public email provider with MX records. Profile links are
-accepted only when linked from a live official page and an ordinary HTTP 200
+emails must be published on a live official page, match the grounded person,
+pass syntax validation, and have MX records; recognized public email providers
+are allowed when the page grounds the matching person. Pattern-derived addresses
+require multiple observed examples. Without a verified person-specific channel,
+a shared inbox on the company domain or an email published on the official page
+from a recognized public provider may qualify as a company contact. Profile links
+are accepted only when linked from a live official page and an ordinary HTTP 200
 response matches the person or organization. Network functions are injectable.
 """
 
@@ -126,6 +126,11 @@ def _same_org_domain(email_domain: str, org_domain: str) -> bool:
 
 def _is_public_email_provider(email_domain: str) -> bool:
     domain = email_domain.casefold().strip(".")
+    # Yahoo operates country-specific domains (for example yahoo.co.uk and
+    # yahoo.co.in); allow that exact brand namespace, subject to official-page
+    # publication and MX verification below.
+    if domain.startswith("yahoo."):
+        return True
     return any(domain == provider or domain.endswith("." + provider) for provider in PUBLIC_EMAIL_PROVIDERS)
 
 
@@ -426,7 +431,7 @@ def _verified_company_level_contact(
     mx_lookup: Callable[[str], Any],
     mx_cache: dict[str, bool],
 ) -> VerifiedLead | None:
-    """Verify a published shared company inbox without inventing a person."""
+    """Verify a company contact published on its live official site."""
     candidates: list[EmailEvidence] = []
     for page in pages:
         if str(page.get("status", "")).casefold() != "ok" or not _page_is_official_domain(page, org.domain):
@@ -437,9 +442,11 @@ def _verified_company_level_contact(
             public_provider = _is_public_email_provider(email_domain)
             if not (same_org_domain or public_provider):
                 continue
-            # Company-level fallback remains limited to shared/role inboxes;
-            # a personal-looking Gmail address is not mislabeled as general.
-            if is_generic_inbox(item.address, generic_inboxes):
+            # Company-domain addresses must be shared/role inboxes. Public
+            # provider addresses are allowed because the official page itself
+            # publishes them; their output label remains company-level unless
+            # the exact address was grounded against a Step 3 person below.
+            if public_provider or (same_org_domain and is_generic_inbox(item.address, generic_inboxes)):
                 candidates.append(item)
     priority = {
         "partnership": 0, "partnerships": 0, "sponsor": 1, "sponsorship": 1,
@@ -456,8 +463,9 @@ def _verified_company_level_contact(
         domain = _email_domain(item.address)
         if not _mx_passes(domain, mx_lookup, mx_cache):
             continue
+        is_shared_inbox = is_generic_inbox(item.address, generic_inboxes)
         person = Person(
-            full_name="General Contact",
+            full_name="General Contact" if is_shared_inbox else "Published Contact",
             role="Company Contact",
             source_url=item.source_url,
             role_score=0.0,
@@ -475,7 +483,7 @@ def _verified_company_level_contact(
             supporting_urls=[item.source_url],
             checks_passed=[
                 "published_on_live_official_page",
-                "company_level_shared_inbox",
+                "company_level_shared_inbox" if is_shared_inbox else "officially_published_public_provider_contact",
                 domain_check,
                 "syntax_valid",
                 "mx_ok",
@@ -637,7 +645,10 @@ def verify_contacts(
         for item in evidence:
             if is_generic_inbox(item.address, generic_inboxes):
                 continue
-            if not _same_org_domain(_email_domain(item.address), org.domain):
+            email_domain = _email_domain(item.address)
+            same_org_domain = _same_org_domain(email_domain, org.domain)
+            public_provider = _is_public_email_provider(email_domain)
+            if not (same_org_domain or public_provider):
                 continue
             if not email_matches_person(item.address, person.full_name):
                 continue
@@ -647,13 +658,20 @@ def verify_contacts(
             domain = _email_domain(item.address)
             if not _mx_passes(domain, mx_lookup, mx_cache):
                 continue
+            domain_check = "same_org_domain" if _same_org_domain(domain, org.domain) else "public_email_provider"
             selected_contact = Contact(
                 channel=item.address,
                 channel_type="email",
                 status="Verified",
                 evidence_url=item.source_url,
                 supporting_urls=[item.source_url],
-                checks_passed=["found_on_live_official_page", "person_name_match", "same_org_domain", "syntax_valid", "mx_ok"],
+                checks_passed=[
+                    "found_on_live_official_page",
+                    "person_name_match",
+                    domain_check,
+                    "syntax_valid",
+                    "mx_ok",
+                ],
             )
             break
 

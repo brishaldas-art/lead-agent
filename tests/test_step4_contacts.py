@@ -94,7 +94,7 @@ def test_exact_person_email_requires_official_domain_name_match_and_mx():
     assert result.dropped == []
 
 
-def test_generic_or_foreign_email_is_rejected_before_profile_fallback():
+def test_public_provider_person_email_is_verified_before_profile_fallback():
     org = make_org()
     person = make_person()
     page_url = "https://acmesolar.in/contact"
@@ -125,13 +125,14 @@ def test_generic_or_foreign_email_is_rejected_before_profile_fallback():
     )
     assert len(result.verified) == 1
     contact = result.verified[0].contact
-    assert contact.channel == profile_url
-    assert contact.channel_type == "profile_link"
+    assert contact.channel == "asha.banerjee@gmail.com"
+    assert contact.channel_type == "email"
     assert contact.status == "Verified"
     assert str(contact.evidence_url) == page_url
-    assert [str(url) for url in contact.supporting_urls] == [page_url, profile_url]
-    assert "http_200" in contact.checks_passed
-    assert mx_calls == []
+    assert [str(url) for url in contact.supporting_urls] == [page_url]
+    assert "person_name_match" in contact.checks_passed
+    assert "public_email_provider" in contact.checks_passed
+    assert mx_calls == ["gmail.com"]
     assert is_generic_inbox("sales@acmesolar.in")
     assert is_generic_inbox("no.reply@acmesolar.in")
 
@@ -352,7 +353,7 @@ def test_company_level_public_provider_inbox_requires_official_publication_and_m
     assert mx_calls == ["gmail.com"]
 
 
-def test_public_provider_personal_looking_email_is_not_labeled_general():
+def test_public_provider_personal_looking_email_is_allowed_but_not_as_a_named_person():
     org = make_org()
     page = {
         "url": "https://acmesolar.in/contact",
@@ -363,10 +364,38 @@ def test_public_provider_personal_looking_email_is_not_labeled_general():
     result = verify_contacts(
         Step3Outcome(),
         [{"org": org, "pages": [page]}],
-        mx_lookup=lambda _domain: (_ for _ in ()).throw(AssertionError("personal external address is not a shared inbox")),
+        mx_lookup=lambda domain: domain == "gmail.com",
         profile_fetch_fn=lambda _url: None,
     )
-    assert result.verified == []
+    assert len(result.verified) == 1
+    lead = result.verified[0]
+    assert lead.person.full_name == "Published Contact"
+    assert lead.person.role == "Company Contact"
+    assert lead.contact.channel == "ravi.kumar@gmail.com"
+    assert "officially_published_public_provider_contact" in lead.contact.checks_passed
+
+
+def test_public_provider_email_matching_grounded_person_keeps_person_label():
+    org = make_org()
+    person = make_person()
+    page = {
+        "url": "https://acmesolar.in/contact",
+        "status": "ok",
+        "text": "Asha Banerjee, Head of CSR, asha.banerjee@yahoo.com",
+        "html": '<a href="mailto:asha.banerjee@yahoo.com">Asha Banerjee</a>',
+    }
+    step3, records = make_pipeline(org, person, [page])
+    result = verify_contacts(
+        step3,
+        records,
+        mx_lookup=lambda domain: domain == "yahoo.com",
+        profile_fetch_fn=lambda _url: None,
+    )
+    assert len(result.verified) == 1
+    lead = result.verified[0]
+    assert lead.person.full_name == "Asha Banerjee"
+    assert lead.contact.channel == "asha.banerjee@yahoo.com"
+    assert "public_email_provider" in lead.contact.checks_passed
 
 
 def test_email_name_variants_are_exact_after_normalization():
@@ -378,11 +407,15 @@ def test_email_name_variants_are_exact_after_normalization():
 if __name__ == "__main__":
     test_email_extractors_cover_mailto_obfuscation_and_cloudflare()
     test_exact_person_email_requires_official_domain_name_match_and_mx()
-    test_generic_or_foreign_email_is_rejected_before_profile_fallback()
+    test_public_provider_person_email_is_verified_before_profile_fallback()
     test_email_without_mx_is_not_marked_verified()
     test_profile_fallback_rejects_non_200_responses()
     test_pattern_derived_email_requires_two_same_domain_examples_and_mx()
     test_wayback_only_emails_and_unmatched_contacts_are_not_verified()
-    test_public_generic_contact_is_retained_for_review_without_a_person()
+    test_public_generic_contact_qualifies_as_company_level_without_a_person()
+    test_company_level_contact_fallback_requires_live_same_domain_and_mx()
+    test_company_level_public_provider_inbox_requires_official_publication_and_mx()
+    test_public_provider_personal_looking_email_is_allowed_but_not_as_a_named_person()
+    test_public_provider_email_matching_grounded_person_keeps_person_label()
     test_email_name_variants_are_exact_after_normalization()
     print("Step 4 offline tests passed; no DNS, API, or live HTTP calls were made.")

@@ -98,7 +98,9 @@ class Budget:
                 data = {}
         else:
             data = {}
-        if data.get("date") != today:
+        date_changed = data.get("date") != today
+        timezone_missing = data.get("timezone") != "America/Los_Angeles"
+        if date_changed:
             self.state = {"date": today, "used": {}, "dead": []}
         else:
             self.state = data
@@ -106,6 +108,12 @@ class Budget:
         self.state.setdefault("used", {})
         self.state.setdefault("dead", [])
         self.state["date"] = today
+        self.state["timezone"] = "America/Los_Angeles"
+        # Persist rollover immediately, even when this run only hits cache or
+        # makes no successful Gemini call. Otherwise the on-disk counter looks
+        # stale until the next successful response is recorded.
+        if date_changed or timezone_missing:
+            self._save_state()
 
     def _save_state(self):
         self._state_path.parent.mkdir(parents=True, exist_ok=True)

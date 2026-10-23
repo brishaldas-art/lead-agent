@@ -5,7 +5,8 @@ emails must be present on a live company-domain page, match the grounded person,
 pass syntax validation and have MX records; pattern-derived addresses require
 multiple observed examples. When no person-specific channel passes, a published
 shared company inbox may qualify as `General Contact, Company Contact`, provided
-it is on a live official page and its domain has MX records. Profile links are
+it is published on a live official page and its domain is either the company
+domain or a known public email provider with MX records. Profile links are
 accepted only when linked from a live official page and an ordinary HTTP 200
 response matches the person or organization. Network functions are injectable.
 """
@@ -59,6 +60,12 @@ PROFILE_HOSTS = {"linkedin.com", "instagram.com", "facebook.com"}
 PROFILE_PATH_BLOCKLIST = {
     "about", "accounts", "explore", "popular", "p", "reel", "reels", "stories",
     "directory", "login", "help", "company", "jobs", "careers",
+}
+PUBLIC_EMAIL_PROVIDERS = {
+    "gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.in", "yahoo.in", "ymail.com",
+    "outlook.com", "outlook.in", "hotmail.com", "hotmail.co.in", "live.com", "icloud.com",
+    "me.com", "mac.com", "aol.com", "rediffmail.com", "rediff.com", "protonmail.com",
+    "proton.me", "zoho.com", "fastmail.com", "mail.com",
 }
 
 
@@ -115,6 +122,11 @@ def _same_org_domain(email_domain: str, org_domain: str) -> bool:
     domain = email_domain.casefold().strip(".")
     root = org_domain.casefold().strip(".")
     return bool(domain and root and (domain == root or domain.endswith("." + root)))
+
+
+def _is_public_email_provider(email_domain: str) -> bool:
+    domain = email_domain.casefold().strip(".")
+    return any(domain == provider or domain.endswith("." + provider) for provider in PUBLIC_EMAIL_PROVIDERS)
 
 
 def _load_generic_inboxes(path: Path = GENERIC_INBOXES_PATH) -> set[str]:
@@ -420,8 +432,13 @@ def _verified_company_level_contact(
         if str(page.get("status", "")).casefold() != "ok" or not _page_is_official_domain(page, org.domain):
             continue
         for item in extract_page_emails(page):
-            if not _same_org_domain(_email_domain(item.address), org.domain):
+            email_domain = _email_domain(item.address)
+            same_org_domain = _same_org_domain(email_domain, org.domain)
+            public_provider = _is_public_email_provider(email_domain)
+            if not (same_org_domain or public_provider):
                 continue
+            # Company-level fallback remains limited to shared/role inboxes;
+            # a personal-looking Gmail address is not mislabeled as general.
             if is_generic_inbox(item.address, generic_inboxes):
                 candidates.append(item)
     priority = {
@@ -445,6 +462,11 @@ def _verified_company_level_contact(
             source_url=item.source_url,
             role_score=0.0,
         )
+        domain_check = (
+            "same_org_domain"
+            if _same_org_domain(domain, org.domain)
+            else "published_public_email_provider"
+        )
         contact = Contact(
             channel=item.address,
             channel_type="email",
@@ -454,7 +476,7 @@ def _verified_company_level_contact(
             checks_passed=[
                 "published_on_live_official_page",
                 "company_level_shared_inbox",
-                "same_org_domain",
+                domain_check,
                 "syntax_valid",
                 "mx_ok",
             ],

@@ -329,6 +329,46 @@ def test_company_level_contact_fallback_requires_live_same_domain_and_mx():
         assert result.verified == []
 
 
+def test_company_level_public_provider_inbox_requires_official_publication_and_mx():
+    org = make_org()
+    page = {
+        "url": "https://acmesolar.in/contact",
+        "status": "ok",
+        "text": "Contact our team at info@gmail.com",
+        "html": '<a href="mailto:info@gmail.com">Contact</a>',
+    }
+    mx_calls = []
+    result = verify_contacts(
+        Step3Outcome(),
+        [{"org": org, "pages": [page]}],
+        mx_lookup=lambda domain: mx_calls.append(domain) or domain == "gmail.com",
+        profile_fetch_fn=lambda _url: None,
+    )
+    assert len(result.verified) == 1
+    contact = result.verified[0].contact
+    assert contact.channel == "info@gmail.com"
+    assert "published_public_email_provider" in contact.checks_passed
+    assert "same_org_domain" not in contact.checks_passed
+    assert mx_calls == ["gmail.com"]
+
+
+def test_public_provider_personal_looking_email_is_not_labeled_general():
+    org = make_org()
+    page = {
+        "url": "https://acmesolar.in/contact",
+        "status": "ok",
+        "text": "Contact Ravi at ravi.kumar@gmail.com",
+        "html": '<a href="mailto:ravi.kumar@gmail.com">Ravi</a>',
+    }
+    result = verify_contacts(
+        Step3Outcome(),
+        [{"org": org, "pages": [page]}],
+        mx_lookup=lambda _domain: (_ for _ in ()).throw(AssertionError("personal external address is not a shared inbox")),
+        profile_fetch_fn=lambda _url: None,
+    )
+    assert result.verified == []
+
+
 def test_email_name_variants_are_exact_after_normalization():
     assert email_matches_person("a.banerjee@acmesolar.in", "Dr. Asha Banerjee")
     assert email_matches_person("banerjee.asha@acmesolar.in", "Asha Banerjee")

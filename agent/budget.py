@@ -28,7 +28,11 @@ class Budget:
         rpm = int(os.getenv("RPM_LIMIT", "5"))
         tpm = int(os.getenv("TPM_LIMIT", "250000"))
         rpd = int(os.getenv("RPD_LIMIT", "20"))
-        max_calls = int(os.getenv("MAX_CALLS_PER_RUN", "15"))
+        configured_max_calls = int(os.getenv("MAX_CALLS_PER_RUN", "10"))
+        # Enforce the safe multi-run ceiling even if an older local .env still
+        # contains a larger value. Users may lower the cap, but not raise it
+        # beyond ten without changing this guard intentionally.
+        max_calls = min(max(configured_max_calls, 0), 10)
         safety = float(os.getenv("SAFETY", "0.8"))
         return cls(rpm, tpm, rpd, max_calls, safety)
 

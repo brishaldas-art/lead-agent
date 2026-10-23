@@ -169,11 +169,11 @@ MODEL_FAST=gemini-3.1-flash-lite,gemini-flash-lite-latest
 MODEL_SMART=gemini-3.5-flash,gemini-3-flash-preview
 RPM_LIMIT=5
 RPD_LIMIT=20
-MAX_ORGS=8
+MAX_ORGS=6
 BATCH_ORGS=3
-MAX_CALLS_PER_RUN=12
-MAX_SNIPPET_FALLBACKS=5
-REPLAN_ROUNDS=1
+MAX_CALLS_PER_RUN=10
+MAX_SNIPPET_FALLBACKS=2
+REPLAN_ROUNDS=0
 OFFLINE=1
 SHEET_ID=
 GOOGLE_CREDENTIALS=credentials.json
@@ -188,6 +188,8 @@ Each model name in `MODEL_FAST` and `MODEL_SMART` is tried in order. When one mo
 - Every Gemini answer and every search result is cached in `outputs/.llm_cache`. A repeated input makes no new request.
 - Usage is tracked in `outputs/.budget.json`; its `date` is the Pacific calendar date used for quota rollover. A new date is written immediately on startup, even if the run only hits cache.
 - To replay a previous run without any requests, use `--offline` with the same inputs.
+
+The safe profile is `MAX_CALLS_PER_RUN=10`, `MAX_ORGS=6`, `MAX_SNIPPET_FALLBACKS=2`, and `REPLAN_ROUNDS=0`. The code hard-caps each run at 10 accounted Gemini responses even if an older `.env` asks for more. This aims to allow two full runs within the typical 20-requests-per-model daily limit; usage already spent today still counts, and actual call needs vary by prompt/cache/results. The saved budget file is intentionally retained across runs and rolls over at midnight Pacific. If you already have `.env`, lower its `MAX_ORGS`, fallback, and replan settings to match the safe profile; `.env` is local and git-ignored.
 
 ## Tests
 

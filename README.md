@@ -185,7 +185,7 @@ Each model name in `MODEL_FAST` and `MODEL_SMART` is tried in order. When one mo
 
 - The free tier allows about 20 requests per model per day. Limits reset at midnight Pacific Time.
 - Limits apply per Google Cloud project, not per key.
-- Every Gemini answer and every search result is cached in `outputs/.llm_cache`. A repeated input makes no new request.
+- Gemini answers and non-empty search results are cached. A repeated input reuses cached data; empty or failed searches are not cached permanently, so a later run can retry them.
 - Usage is tracked in `outputs/.budget.json`; its `date` is the Pacific calendar date used for quota rollover. A new date is written immediately on startup, even if the run only hits cache.
 - To replay a previous run without any requests, use `--offline` with the same inputs.
 
@@ -206,6 +206,7 @@ python -m tests.test_step3_cli
 python -m tests.test_step4_contacts
 python -m tests.test_step5_export
 python -m tests.test_small_sample
+python -m tests.test_search_cache
 python -m tests.test_budget
 ```
 

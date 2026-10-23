@@ -36,7 +36,12 @@ def run_query(query: str) -> List[Dict]:
     cache_file = _cache_path(q)
     if cache_file.is_file():
         try:
-            return json.loads(cache_file.read_text(encoding="utf-8"))
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
+            if cached:
+                return cached
+            # Empty search results may have been caused by a transient DDGS
+            # failure. Do not let an old miss suppress future live retries.
+            cache_file.unlink(missing_ok=True)
         except Exception:
             pass
     time.sleep(DELAY_SECONDS)
@@ -44,10 +49,10 @@ def run_query(query: str) -> List[Dict]:
         raw = DDGS().text(q, max_results=MAX_RESULTS)
     except DDGSException as e:
         _logger.warning("DDGS query failed for %s: %s", q, e)
-        raw = []
+        return []
     except Exception as e:
         _logger.warning("DDGS query error for %s: %s", q, e)
-        raw = []
+        return []
     results: List[Dict] = []
     for r in raw:
         url = r.get("href", "")
@@ -58,10 +63,11 @@ def run_query(query: str) -> List[Dict]:
             "url": url,
             "snippet": r.get("body", ""),
         })
-    try:
-        cache_file.write_text(json.dumps(results), encoding="utf-8")
-    except Exception:
-        pass
+    if results:
+        try:
+            cache_file.write_text(json.dumps(results), encoding="utf-8")
+        except Exception:
+            pass
     return results
 
 

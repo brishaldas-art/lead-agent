@@ -31,9 +31,16 @@ NAME_PAT = re.compile(r"^[A-Z].{2,59}$")
 _INDUSTRY_TEMPLATES = [
     "{ind} companies in {place}",
     "{ind} startups {place}",
+]
+_DIGITAL_INDUSTRY_TEMPLATES = ["{place} {ind} firms"]
+_NON_DIGITAL_INDUSTRY_TEMPLATES = [
     "{place} {ind} manufacturers",
     "{place} {ind} CSR",
 ]
+_DIGITAL_INDUSTRY_TERMS = (
+    "software", "it services", "information technology", "technology products",
+    "telecommunications", "cybersecurity", "computer", "tech",
+)
 
 # College runs (College Delegation only). College wording is expected here.
 _COLLEGE_TEMPLATES = [
@@ -194,9 +201,14 @@ def build_queries(
     inds = [i.strip() for i in industries if i and i.strip()] or ["technology"]
 
     queries: List[str] = []
-    for t in _INDUSTRY_TEMPLATES:
-        for ind in inds[:2]:
-            queries.append(t.format(ind=ind, place=place))
+    for ind in inds[:2]:
+        normalized_industry = " ".join(ind.casefold().split())
+        digital = any(term in normalized_industry for term in _DIGITAL_INDUSTRY_TERMS)
+        templates = _INDUSTRY_TEMPLATES + (
+            _DIGITAL_INDUSTRY_TEMPLATES if digital else _NON_DIGITAL_INDUSTRY_TEMPLATES
+        )
+        for template in templates:
+            queries.append(template.format(ind=ind, place=place))
     if theme:
         short_theme = " ".join(theme.split()[:2])  # keep long theme phrases from breaking the limit
         queries.append(f"{short_theme} {inds[0]} {place}")

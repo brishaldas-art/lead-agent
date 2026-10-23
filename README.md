@@ -115,7 +115,7 @@ The corresponding research brief is in `data/sponsor_search_brief.txt`. Company-
 
 ### Part 3: Decision-maker identification
 
-After discovery, each usable organization is checked against the editable priority roles in `data/role_keywords.json`. In city-scoped runs, organizations without matching live-page location evidence are skipped before Step 3 to avoid spending model calls on leads Step 5 must reject. Step 3 builds merged windows around role keywords, labels every window with its original page URL, and caps context at 6,000 characters per organization. It batches up to `BATCH_ORGS` organizations per Gemini `smart` request.
+After discovery, each usable organization is checked against the editable priority roles in `data/role_keywords.json`, even if city evidence is not yet confirmed. This preserves contact evidence for manual review; Step 5 still rejects any lead without city evidence on a live official page. Step 3 builds merged windows around role keywords, labels every window with its original page URL, and caps context at 6,000 characters per organization. It batches up to `BATCH_ORGS` organizations per Gemini `smart` request.
 
 Gemini only proposes a name, role, organization ID, and source URL. Code rejects candidates unless the person name is present in the original source text (fuzzy score at least 92), a matching target role is supported within 300 characters, and the returned URL exactly matches a labelled page. Candidates are ranked by role priority, page type, and live-versus-Wayback source; the highest-ranked person is selected and the others are retained for audit. Generic entries and prompt-injected claims are not accepted without source grounding.
 

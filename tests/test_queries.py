@@ -16,4 +16,9 @@ assert all("renewable energy" in q.casefold() for q in renewable_queries), renew
 assert all("Kolkata" in q for q in renewable_queries), renewable_queries
 assert not any("IT services" in q or "tech company careers" in q for q in renewable_queries)
 
+digital_queries = build_queries("Sponsor", "Kolkata", ["software", "IT services"], None)
+assert len(digital_queries) == 6, digital_queries
+assert all("Kolkata" in q for q in digital_queries), digital_queries
+assert not any("manufacturers" in q or "CSR" in q for q in digital_queries), digital_queries
+
 print("query tests passed")

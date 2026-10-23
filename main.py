@@ -15,29 +15,6 @@ from agent.discovery import run_discovery
 load_dotenv()
 
 
-def _has_live_city_evidence(record: dict) -> bool:
-    """Require a live official-page URL in the discovery location evidence.
-
-    Search snippets alone are insufficient for the downstream city-grounding
-    rule. Older/mocked records without a verification object remain compatible.
-    """
-    verification = record.get("verification")
-    if not isinstance(verification, dict):
-        return True
-    evidence_urls = {
-        str(url).strip().rstrip("/").casefold()
-        for url in verification.get("location_evidence_urls", [])
-        if url
-    }
-    if not evidence_urls:
-        return False
-    return any(
-        str(page.get("status", "")).casefold() == "ok"
-        and str(page.get("url", "")).strip().rstrip("/").casefold() in evidence_urls
-        for page in record.get("pages", [])
-    )
-
-
 def _print_usage():
     msg = (
         "Usage: main.py [--prompt <text>] [--pdf <path>] [--offline]\n"
@@ -127,25 +104,11 @@ def main() -> int:
     from agent.step3_people import identify_people
 
     print("\nRunning Step 3: decision-maker identification...")
-    location_skipped = []
-    people_records = records
-    if plan.city:
-        people_records = []
-        for record in records:
-            if _has_live_city_evidence(record):
-                people_records.append(record)
-                continue
-            org = record.get("org")
-            location_skipped.append({
-                "org_name": getattr(org, "org_name", "unknown organization"),
-                "domain": getattr(org, "domain", ""),
-                "reason": f"no live official page confirms target location {plan.city}; skipped Step 3 to save calls",
-            })
-    people_result = identify_people(people_records)
-    people_result.dropped = location_skipped + people_result.dropped
+    # Try to ground a contact for every organization with usable official pages.
+    # Step 5 remains the final strict city gate; do not hide potentially useful
+    # contact evidence merely because the organization's location is unverified.
+    people_result = identify_people(records)
     print(f"Grounded decision-makers found: {len(people_result.identified)}")
-    if location_skipped:
-        print(f"Skipped before Step 3 for unverified location: {len(location_skipped)}")
     for item in people_result.identified:
         print(
             f"- {item.org.org_name} | {item.person.full_name} | {item.person.role} "

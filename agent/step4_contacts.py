@@ -1,14 +1,13 @@
 """Step 4: extract and verify conservative official-page contact channels.
 
-This module never asks an LLM to write or validate contact data. Person-specific
-emails must be published on a live official page, match the grounded person,
-pass syntax validation, and have MX records; recognized public email providers
-are allowed when the page grounds the matching person. Pattern-derived addresses
-require multiple observed examples. Without a verified person-specific channel,
-a shared inbox on the company domain or an email published on the official page
-from a recognized public provider may qualify as a company contact. Profile links
-are accepted only when linked from a live official page and an ordinary HTTP 200
-response matches the person or organization. Network functions are injectable.
+This module never asks an LLM to write or validate contact data. Verified
+contacts are email-only: person-specific emails must be published on a live
+official page, match the grounded person, pass syntax validation, and have MX
+records; recognized public email providers are allowed when the official page
+publishes them. Pattern-derived addresses require multiple observed examples.
+Without a verified person-specific email, a published shared inbox can qualify
+as a clearly labeled company contact. Social/profile links may aid discovery but
+are never exported as contact channels.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import unquote, urlparse
 
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field, HttpUrl
@@ -34,7 +33,6 @@ from agent.step3_people import OrgWithPerson, Person, Step3Outcome
 logger = logging.getLogger("agent.step4")
 ROOT = Path(__file__).resolve().parents[1]
 GENERIC_INBOXES_PATH = ROOT / "data" / "generic_inboxes.txt"
-USER_AGENT = "Mozilla/5.0 (compatible; LeadAgent/1.0)"
 EMAIL_RE = re.compile(
     r"(?<![A-Z0-9.!#$%&'*+/=?^_`{|}~-])"
     r"[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@"
@@ -56,11 +54,6 @@ GENERIC_DEFAULTS = {
 }
 HONORIFICS = {"mr", "mrs", "ms", "miss", "dr", "prof", "professor", "shri", "smt"}
 NAME_STOPWORDS = {"the", "of", "for", "and", "at", "in"}
-PROFILE_HOSTS = {"linkedin.com", "instagram.com", "facebook.com"}
-PROFILE_PATH_BLOCKLIST = {
-    "about", "accounts", "explore", "popular", "p", "reel", "reels", "stories",
-    "directory", "login", "help", "company", "jobs", "careers",
-}
 PUBLIC_EMAIL_PROVIDERS = {
     "gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.in", "yahoo.in", "ymail.com",
     "outlook.com", "outlook.in", "hotmail.com", "hotmail.co.in", "live.com", "icloud.com",
@@ -71,7 +64,7 @@ PUBLIC_EMAIL_PROVIDERS = {
 
 class Contact(BaseModel):
     channel: str
-    channel_type: Literal["email", "profile_link"]
+    channel_type: Literal["email"]
     status: Literal["Verified", "Pattern-Derived"]
     evidence_url: HttpUrl
     supporting_urls: list[HttpUrl] = Field(default_factory=list)
@@ -290,141 +283,6 @@ def _default_mx_lookup(domain: str) -> bool:
         return False
 
 
-def _profile_link_is_candidate(url: str, org_domain: str, person: Person) -> bool:
-    try:
-        parsed = urlparse(url)
-        host_value = parsed.hostname
-    except ValueError:
-        return False
-    if parsed.scheme not in {"http", "https"} or not host_value:
-        return False
-    host = host_value.casefold()
-    path_parts = [part.casefold() for part in parsed.path.split("/") if part]
-    if not path_parts:
-        return False
-    if any(host == domain or host.endswith("." + domain) for domain in PROFILE_HOSTS):
-        if host.endswith("linkedin.com"):
-            return len(path_parts) >= 2 and path_parts[0] == "in"
-        return path_parts[0] not in PROFILE_PATH_BLOCKLIST and path_parts[0] not in {"p", "reel"}
-    clean_host = host[4:] if host.startswith("www.") else host
-    if clean_host == org_domain or clean_host.endswith("." + org_domain):
-        path = "/".join(path_parts)
-        person_slug = "".join(_normalized_name_words(person.full_name))
-        normalized_path = re.sub(r"[^a-z0-9]", "", path)
-        page_terms = {"team", "people", "person", "leadership", "staff", "faculty", "committee", "member", "profile"}
-        return any(term in path_parts for term in page_terms) or bool(person_slug and person_slug in normalized_path)
-    return False
-
-
-def _linked_profile_urls(org: Any, person: Person, pages: list[dict[str, Any]]) -> list[tuple[str, str]]:
-    links: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    for page in pages:
-        if str(page.get("status", "")).casefold() != "ok":
-            continue
-        source_url = str(page.get("url", "") or "")
-        if not source_url or not page.get("html"):
-            continue
-        soup = BeautifulSoup(str(page["html"]), "html.parser")
-        for anchor in soup.find_all("a", href=True):
-            href = str(anchor.get("href", "")).strip()
-            if not href or href.startswith(("mailto:", "tel:", "javascript:", "#")):
-                continue
-            target = urljoin(source_url, href)
-            if not _profile_link_is_candidate(target, org.domain, person) or target in seen:
-                continue
-            seen.add(target)
-            links.append((target, source_url))
-    return links
-
-
-def _default_profile_fetch(url: str) -> dict[str, Any] | None:
-    """Make one plain HTTP request; no login, scraping workaround, or retries."""
-    if os.getenv("OFFLINE", "0") == "1":
-        return None
-    try:
-        import httpx
-        response = httpx.get(
-            url,
-            headers={"User-Agent": USER_AGENT},
-            follow_redirects=True,
-            timeout=6.0,
-        )
-        return {
-            "status_code": response.status_code,
-            "final_url": str(response.url),
-            "html": response.text if response.status_code == 200 else "",
-        }
-    except Exception as exc:
-        logger.info("Profile-link request failed for %s: %s", url, type(exc).__name__)
-        return None
-
-
-def _profile_match_kind(page_html: str, person: Person, org_name: str) -> str | None:
-    soup = BeautifulSoup(page_html or "", "html.parser")
-    title = soup.title.get_text(" ", strip=True) if soup.title else ""
-    text = " ".join(soup.get_text(" ", strip=True).split())[:12000]
-    person_phrase = " ".join(_normalized_name_words(person.full_name))
-    org_phrase = " ".join(_normalized_name_words(org_name))
-    for candidate in (title, text):
-        normalized = _ascii(candidate).casefold()
-        if person_phrase and fuzz.partial_ratio(person_phrase, normalized) >= 88:
-            return "person_name_match"
-    for candidate in (title, text):
-        normalized = _ascii(candidate).casefold()
-        if org_phrase and fuzz.partial_ratio(org_phrase, normalized) >= 88:
-            return "organization_name_match"
-    return None
-
-
-def _find_verified_profile(
-    org: Any,
-    person: Person,
-    pages: list[dict[str, Any]],
-    profile_fetch_fn: Callable[[str], Any],
-) -> Contact | None:
-    live_page_by_url = {
-        str(page.get("url", "")): page
-        for page in pages
-        if str(page.get("status", "")).casefold() == "ok" and page.get("url")
-    }
-    for link_url, evidence_url in _linked_profile_urls(org, person, pages):
-        target_page = live_page_by_url.get(link_url)
-        if target_page is not None:
-            response = {"status_code": 200, "html": target_page.get("html", "")}
-        else:
-            try:
-                response = profile_fetch_fn(link_url)
-            except Exception as exc:
-                logger.info("Profile validation failed for %s: %s", link_url, type(exc).__name__)
-                response = None
-        if not response:
-            continue
-        if hasattr(response, "status_code"):
-            response = {
-                "status_code": response.status_code,
-                "final_url": str(getattr(response, "url", "") or ""),
-                "html": getattr(response, "text", "") if response.status_code == 200 else "",
-            }
-        if not isinstance(response, dict) or response.get("status_code") != 200:
-            continue
-        final_url = str(response.get("final_url", "") or "")
-        if final_url and not _profile_link_is_candidate(final_url, org.domain, person):
-            continue
-        match_kind = _profile_match_kind(str(response.get("html", "")), person, org.org_name)
-        if not match_kind:
-            continue
-        return Contact(
-            channel=link_url,
-            channel_type="profile_link",
-            status="Verified",
-            evidence_url=evidence_url,
-            supporting_urls=[evidence_url, link_url],
-            checks_passed=["linked_from_live_official_page", "http_200", match_kind],
-        )
-    return None
-
-
 def _verified_company_level_contact(
     org: OrgCandidate,
     pages: list[dict[str, Any]],
@@ -584,15 +442,15 @@ def verify_contacts(
     profile_fetch_fn: Callable[[str], Any] | None = None,
     generic_inboxes_path: Path = GENERIC_INBOXES_PATH,
 ) -> Step4Outcome:
-    """Return only contacts that pass deterministic source and validation checks.
+    """Return only published or safely pattern-derived email contacts.
 
-    Production MX/profile checks use simple network requests unless ``OFFLINE=1``.
-    Unit tests should inject these callables; the test suite never performs DNS
-    queries or makes HTTP requests.
+    ``profile_fetch_fn`` is retained as a deprecated compatibility argument and
+    is intentionally never called: social profiles cannot qualify as contacts.
+    Production performs MX lookups unless ``OFFLINE=1``. Tests inject the MX
+    function and do not perform network calls.
     """
     identified = getattr(step3_result, "identified", step3_result)
     mx_lookup = mx_lookup or _default_mx_lookup
-    profile_fetch_fn = profile_fetch_fn or _default_profile_fetch
     generic_inboxes = _load_generic_inboxes(generic_inboxes_path)
     org_pages = _pages_for_org(discovery_records)
     mx_cache: dict[str, bool] = {}
@@ -700,14 +558,6 @@ def verify_contacts(
                             ],
                         )
 
-        if selected_contact is None:
-            selected_contact = _find_verified_profile(
-                org,
-                person,
-                live_pages,
-                profile_fetch_fn,
-            )
-
         if selected_contact:
             outcome.verified.append(VerifiedLead(org=org, person=person, contact=selected_contact))
         else:
@@ -716,7 +566,7 @@ def verify_contacts(
             elif exact_matches and not any(_mx_passes(_email_domain(item.address), mx_lookup, mx_cache) for item in exact_matches):
                 reason = "person-matched email found but its domain has no verified MX record"
             else:
-                reason = "no verifiable person-specific email or matching profile link"
+                reason = "no verifiable person-specific email or published company-level inbox"
             outcome.dropped.append({"org_name": org.org_name, "domain": org.domain, "reason": reason})
 
     # If no person-specific channel passed, a live official shared inbox may

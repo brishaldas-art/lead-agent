@@ -1,4 +1,4 @@
-"""Offline Step 4 tests using fake MX and profile-fetch functions only."""
+"""Offline Step 4 tests using fake MX functions and profile-call spies."""
 
 from agent.schemas import OrgCandidate
 from agent.step3_people import OrgWithPerson, Person, Step3Outcome
@@ -106,7 +106,7 @@ def test_exact_person_email_requires_official_domain_name_match_and_mx():
     assert result.dropped == []
 
 
-def test_public_provider_person_email_is_verified_before_profile_fallback():
+def test_public_provider_person_email_is_verified_and_profile_is_ignored():
     org = make_org()
     person = make_person()
     page_url = "https://acmesolar.in/contact"
@@ -125,8 +125,10 @@ def test_public_provider_person_email_is_verified_before_profile_fallback():
     step3, records = make_pipeline(org, person, [page])
     mx_calls = []
 
+    profile_calls = []
+
     def fetch_profile(url):
-        assert url == profile_url
+        profile_calls.append(url)
         return {"status_code": 200, "html": "<title>Asha Banerjee | CSR Lead</title><p>Acme Solar team</p>"}
 
     result = verify_contacts(
@@ -145,6 +147,7 @@ def test_public_provider_person_email_is_verified_before_profile_fallback():
     assert "person_name_match" in contact.checks_passed
     assert "public_email_provider" in contact.checks_passed
     assert mx_calls == ["gmail.com"]
+    assert profile_calls == []
     assert is_generic_inbox("sales@acmesolar.in")
     assert is_generic_inbox("no.reply@acmesolar.in")
 
@@ -191,35 +194,52 @@ def test_email_without_mx_is_not_marked_verified():
     assert "no verified MX" in result.dropped[0]["reason"]
 
 
-def test_profile_fallback_rejects_non_200_responses():
+def test_social_profile_is_never_verified_or_fetched_as_a_contact():
     org = make_org()
     person = make_person()
     page = {
         "url": "https://acmesolar.in/contact",
         "status": "ok",
         "text": "Asha Banerjee profile",
-        "html": '<a href="https://www.linkedin.com/in/asha-banerjee/">Profile</a>',
+        "html": '<a href="https://www.instagram.com/acmesolar/">Instagram</a>',
+    }
+    step3, records = make_pipeline(org, person, [page])
+    fetch_calls = []
+    result = verify_contacts(
+        step3,
+        records,
+        mx_lookup=lambda _domain: True,
+        profile_fetch_fn=lambda url: fetch_calls.append(url),
+    )
+
+    assert result.verified == []
+    assert fetch_calls == []
+    assert "no verifiable person-specific email" in result.dropped[0]["reason"]
+
+
+def test_published_company_email_wins_over_linked_social_profile():
+    org = make_org()
+    person = make_person()
+    page = {
+        "url": "https://acmesolar.in/contact",
+        "status": "ok",
+        "text": "Contact info@acmesolar.in",
+        "html": (
+            '<a href="mailto:info@acmesolar.in">Email</a>'
+            '<a href="https://www.instagram.com/acmesolar/">Instagram</a>'
+        ),
     }
     step3, records = make_pipeline(org, person, [page])
     result = verify_contacts(
         step3,
         records,
-        mx_lookup=lambda _domain: True,
-        profile_fetch_fn=lambda _url: {"status_code": 403, "html": "Asha Banerjee"},
+        mx_lookup=lambda domain: domain == "acmesolar.in",
+        profile_fetch_fn=lambda _url: (_ for _ in ()).throw(AssertionError("profile fetch must not run")),
     )
-    assert result.verified == []
-    assert "no verifiable" in result.dropped[0]["reason"]
 
-    unrelated = verify_contacts(
-        step3,
-        records,
-        mx_lookup=lambda _domain: True,
-        profile_fetch_fn=lambda _url: {
-            "status_code": 200,
-            "html": "<title>LinkedIn Login</title><p>Sign in to continue</p>",
-        },
-    )
-    assert unrelated.verified == []
+    assert len(result.verified) == 1
+    assert result.verified[0].contact.channel == "info@acmesolar.in"
+    assert result.verified[0].contact.channel_type == "email"
 
 
 def test_pattern_derived_email_requires_two_same_domain_examples_and_mx():
@@ -419,9 +439,10 @@ def test_email_name_variants_are_exact_after_normalization():
 if __name__ == "__main__":
     test_email_extractors_cover_mailto_obfuscation_and_cloudflare()
     test_exact_person_email_requires_official_domain_name_match_and_mx()
-    test_public_provider_person_email_is_verified_before_profile_fallback()
+    test_public_provider_person_email_is_verified_and_profile_is_ignored()
     test_email_without_mx_is_not_marked_verified()
-    test_profile_fallback_rejects_non_200_responses()
+    test_social_profile_is_never_verified_or_fetched_as_a_contact()
+    test_published_company_email_wins_over_linked_social_profile()
     test_pattern_derived_email_requires_two_same_domain_examples_and_mx()
     test_wayback_only_emails_and_unmatched_contacts_are_not_verified()
     test_public_generic_contact_qualifies_as_company_level_without_a_person()

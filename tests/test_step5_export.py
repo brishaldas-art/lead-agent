@@ -269,6 +269,54 @@ def test_official_footer_location_is_checked_when_main_text_omits_city():
         assert rows[1][2] == "Kolkata"
 
 
+def test_legacy_social_profile_contact_is_removed_from_verified_exports():
+    outcome, records, people = sample_inputs()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        output = Path(temp_dir)
+        first = export_verified_leads(
+            outcome, records, output_dir=output, people_result=people,
+            sheet_id="", credentials_path="",
+        )
+        profile_url = "https://www.instagram.com/sigilotech"
+        profile_key = "https://instagram.com/sigilotech"
+        with closing(sqlite3.connect(first.database_path)) as connection:
+            connection.execute(
+                """INSERT INTO leads (
+                    organization_name, category, location, contact_person,
+                    contact_channel, verification_status, root_domain,
+                    normalized_contact_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "SigiloTech", "Sponsor", "Kolkata", "Sarah Walker, Marketing Director",
+                    profile_url, "Verified", "sigilotech.com", profile_key,
+                ),
+            )
+            connection.execute(
+                """INSERT INTO audit_log VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "sigilotech.com", profile_key, "profile_link",
+                    "https://sigilotech.com/", "https://sigilotech.com/",
+                    '["https://sigilotech.com/", "https://www.instagram.com/sigilotech"]',
+                    '["https://sigilotech.com/"]', '["linked_from_live_official_page", "http_200"]',
+                ),
+            )
+            connection.commit()
+
+        second = export_verified_leads(
+            outcome, records, output_dir=output, people_result=people,
+            sheet_id="", credentials_path="",
+        )
+        with Path(second.csv_path).open(encoding="utf-8-sig", newline="") as stream:
+            rows = list(csv.reader(stream))
+        assert len(rows) == 2
+        assert all("instagram.com" not in row[4] for row in rows[1:])
+        with closing(sqlite3.connect(second.database_path)) as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE channel_type != 'email'"
+            ).fetchone()[0] == 0
+            assert connection.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 1
+
+
 def test_unconfirmed_location_drops_row_and_does_not_call_sheets():
     outcome, records, people = sample_inputs()
     records[0]["pages"][0]["text"] = "Acme Solar office address: West Bengal."

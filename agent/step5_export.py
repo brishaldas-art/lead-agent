@@ -260,15 +260,10 @@ def _prepare_lead(
         raise ValueError("organization city is not confirmed in live official-domain page text")
     channel_type = str(contact.channel_type)
     channel = _clean_text(contact.channel)
-    if channel_type == "email":
-        if "@" not in channel:
-            raise ValueError("email contact channel is malformed")
-    elif channel_type == "profile_link":
-        parsed = urlsplit(channel)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("profile contact channel is not an HTTP(S) URL")
-    else:
-        raise ValueError(f"unsupported contact channel type: {channel_type}")
+    if channel_type != "email":
+        raise ValueError("only published email addresses qualify as contact channels")
+    if "@" not in channel:
+        raise ValueError("email contact channel is malformed")
 
     person_name = _clean_text(person.full_name)
     person_role = _clean_text(person.role)
@@ -528,6 +523,30 @@ def _create_tables(connection: sqlite3.Connection) -> None:
             connection.execute(f"ALTER TABLE candidate_review ADD COLUMN {name} {definition}")
 
 
+def _remove_legacy_non_email_leads(connection: sqlite3.Connection) -> int:
+    """Prune previously accepted profile links from the email-only lead store."""
+    keys = connection.execute(
+        """SELECT l.root_domain, l.normalized_contact_key
+           FROM leads AS l LEFT JOIN audit_log AS a
+           USING (root_domain, normalized_contact_key)
+           WHERE COALESCE(a.channel_type, '') != 'email'
+              OR l.contact_channel LIKE 'http://%'
+              OR l.contact_channel LIKE 'https://%'"""
+    ).fetchall()
+    for root_domain, contact_key in keys:
+        connection.execute(
+            "DELETE FROM audit_log WHERE root_domain = ? AND normalized_contact_key = ?",
+            (root_domain, contact_key),
+        )
+        connection.execute(
+            "DELETE FROM leads WHERE root_domain = ? AND normalized_contact_key = ?",
+            (root_domain, contact_key),
+        )
+    if keys:
+        logger.info("Removed %d legacy non-email lead(s) from verified exports", len(keys))
+    return len(keys)
+
+
 def _read_stored(connection: sqlite3.Connection) -> list[_StoredLead]:
     rows = connection.execute(
         """SELECT l.organization_name, l.category, l.location, l.contact_person,
@@ -569,6 +588,7 @@ def _persist_local(
     with closing(sqlite3.connect(database_path)) as connection, connection:
         connection.execute("PRAGMA foreign_keys = ON")
         _create_tables(connection)
+        _remove_legacy_non_email_leads(connection)
         prior = _read_stored(connection)
         for candidate in candidates:
             if any(_is_duplicate(candidate, existing) for existing in prior):

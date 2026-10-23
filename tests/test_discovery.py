@@ -3,7 +3,15 @@ from types import SimpleNamespace
 
 os.environ["OFFLINE"] = "1"
 
-from agent.discovery import run_discovery
+from agent.discovery import _dedupe_results, run_discovery
+
+def test_duplicate_company_domains_are_removed_before_classification():
+    rows = _dedupe_results([
+        {"title": "Acme Systems", "url": "http://www.acmesystems.in/", "snippet": "first"},
+        {"title": "Acme Systems Team", "url": "https://acmesystems.in/team", "snippet": "second"},
+    ])
+    assert len(rows) == 1
+
 
 plan = SimpleNamespace(
     category="Sponsor",
@@ -29,9 +37,21 @@ def fake_classify(results, category, city):
         for r in results
     ]
 
-out = run_discovery(plan, search_fn=fake_search, fetch_fn=fake_fetch, classify_fn=fake_classify)
+out = run_discovery(
+    plan,
+    search_fn=fake_search,
+    fetch_fn=fake_fetch,
+    classify_fn=fake_classify,
+    replan_fn=lambda *args: [],
+    enrich=False,
+)
 for item in out:
     print(item["org"].org_name, item["org"].domain, [(p["status"], p["url"]) for p in item["pages"]])
 assert len(out) == 1
-assert out[0]["pages"][0]["status"] == "search_snippet"
+assert [page["status"] for page in out[0]["pages"]] == ["dead", "search_snippet"]
+assert out[0]["candidate_status"] == "snippet_only"
+assert out[0]["verification"]["status"] == "location_unverified"
+assert out[0]["verification"]["direct_sponsorship_evidence_urls"] == []
+assert out[0]["discovery_evidence"] == []
+test_duplicate_company_domains_are_removed_before_classification()
 print("discovery tests passed")

@@ -1,0 +1,128 @@
+{
+  "Sponsor": [
+    {
+      "name": "Head of CSR / CSR Manager",
+      "priority": 1,
+      "aliases": [
+        "head of csr",
+        "csr head",
+        "csr manager",
+        "head corporate social responsibility",
+        "corporate social responsibility manager",
+        "head of corporate social responsibility"
+      ],
+      "keywords": ["csr", "corporate social responsibility", "social responsibility"]
+    },
+    {
+      "name": "Head of Marketing / CMO",
+      "priority": 2,
+      "aliases": [
+        "head of marketing",
+        "marketing head",
+        "chief marketing officer",
+        "cmo",
+        "marketing director"
+      ],
+      "keywords": ["marketing", "chief marketing officer", "cmo"]
+    },
+    {
+      "name": "Brand Manager",
+      "priority": 3,
+      "aliases": ["brand manager", "brand head", "head of brand", "brand director"],
+      "keywords": ["brand manager", "brand head", "brand director"]
+    },
+    {
+      "name": "Partnerships / Sponsorship / Community / Campus-Outreach Manager",
+      "priority": 4,
+      "aliases": [
+        "partnerships manager",
+        "partnership manager",
+        "head of partnerships",
+        "head of partnership",
+        "partnerships head",
+        "partnership head",
+        "sponsorship manager",
+        "sponsor manager",
+        "head of sponsorship",
+        "community manager",
+        "campus outreach manager",
+        "outreach manager"
+      ],
+      "keywords": ["partnership", "sponsorship", "community", "campus", "outreach"]
+    },
+    {
+      "name": "Corporate Communications Head",
+      "priority": 5,
+      "aliases": [
+        "head of corporate communications",
+        "corporate communications head",
+        "communications director",
+        "head of communications",
+        "communications manager"
+      ],
+      "keywords": ["corporate communications", "communications director", "communications manager"]
+    }
+  ],
+  "College Delegation": [
+    {
+      "name": "Society / Club President",
+      "priority": 1,
+      "aliases": ["society president", "club president", "president of the society", "president of the club"],
+      "keywords": ["society", "club", "president"]
+    },
+    {
+      "name": "Secretary / Convener",
+      "priority": 2,
+      "aliases": [
+        "society secretary",
+        "club secretary",
+        "student society secretary",
+        "secretary of the society",
+        "secretary of the club",
+        "society convener",
+        "society convenor",
+        "club convener",
+        "club convenor"
+      ],
+      "keywords": ["secretary", "convener", "convenor"]
+    },
+    {
+      "name": "Cultural / Technical Fest Coordinator",
+      "priority": 3,
+      "aliases": [
+        "cultural fest coordinator",
+        "technical fest coordinator",
+        "cultural coordinator",
+        "technical coordinator",
+        "fest coordinator",
+        "festival coordinator"
+      ],
+      "keywords": ["cultural", "technical", "fest coordinator", "festival coordinator"]
+    },
+    {
+      "name": "Student Council / Gymkhana Head",
+      "priority": 4,
+      "aliases": [
+        "student council president",
+        "student council head",
+        "gymkhana president",
+        "gymkhana secretary",
+        "gymkhana head"
+      ],
+      "keywords": ["student council", "gymkhana"]
+    },
+    {
+      "name": "Dean / Faculty Advisor of Student Affairs",
+      "priority": 5,
+      "aliases": [
+        "dean of student affairs",
+        "student affairs dean",
+        "faculty advisor",
+        "faculty adviser",
+        "advisor of student affairs",
+        "adviser of student affairs"
+      ],
+      "keywords": ["dean", "faculty advisor", "faculty adviser", "student affairs"]
+    }
+  ]
+}

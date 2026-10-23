@@ -32,12 +32,27 @@ _INDUSTRY_TEMPLATES = [
     "{ind} companies in {place}",
     "{ind} startups {place}",
 ]
-_PLACE_TEMPLATES = [
-    "{place} technology companies",
-    "{place} IT services companies",
-    "{place} company CSR initiatives",
-    "{place} tech company careers",
+_DIGITAL_INDUSTRY_TEMPLATES = ["{place} {ind} firms"]
+# Common search-language variants help discovery engines find providers that
+# describe the same sector with different wording (for example, IT services vs.
+# software development). These are search variants, not classifications.
+_DIGITAL_DISCOVERY_TEMPLATES = [
+    "IT companies {place}",
+    "software companies {place}",
+    "software development firms {place}",
+    "IT consulting firms {place}",
+    "IT solutions companies {place}",
+    "technology companies {place}",
+    "managed IT services {place}",
 ]
+_NON_DIGITAL_INDUSTRY_TEMPLATES = [
+    "{place} {ind} manufacturers",
+    "{place} {ind} CSR",
+]
+_DIGITAL_INDUSTRY_TERMS = (
+    "software", "it services", "information technology", "technology products",
+    "telecommunications", "cybersecurity", "computer", "tech",
+)
 
 # College runs (College Delegation only). College wording is expected here.
 _COLLEGE_TEMPLATES = [
@@ -197,18 +212,38 @@ def build_queries(
 
     inds = [i.strip() for i in industries if i and i.strip()] or ["technology"]
 
+    industry_queries: List[List[str]] = []
+    for ind in inds[:2]:
+        normalized_industry = " ".join(ind.casefold().split())
+        digital = any(term in normalized_industry for term in _DIGITAL_INDUSTRY_TERMS)
+        templates = _INDUSTRY_TEMPLATES + (
+            _DIGITAL_INDUSTRY_TEMPLATES + _DIGITAL_DISCOVERY_TEMPLATES
+            if digital else _NON_DIGITAL_INDUSTRY_TEMPLATES
+        )
+        industry_queries.append([
+            template.format(ind=ind, place=place) for template in templates
+        ])
+
+    # Interleave industries so the first one cannot consume the whole query
+    # allowance when the intent contains two sectors.
     queries: List[str] = []
-    for t in _INDUSTRY_TEMPLATES:
-        for ind in inds[:2]:
-            queries.append(t.format(ind=ind, place=place))
-    for t in _PLACE_TEMPLATES:
-        queries.append(t.format(place=place))
+    max_templates = max((len(group) for group in industry_queries), default=0)
+    for index in range(max_templates):
+        for group in industry_queries:
+            if index < len(group):
+                queries.append(group[index])
+
+    theme_query = ""
     if theme:
         short_theme = " ".join(theme.split()[:2])  # keep long theme phrases from breaking the limit
-        queries.append(f"{short_theme} technology companies {place}")
+        theme_query = f"{short_theme} {inds[0]} {place}"
 
     cleaned = _clean_unique(queries)
     kept = [q for q in cleaned if _fits(q, banned=_COMPANY_BANNED)]
+    if theme_query and theme_query not in kept and _fits(theme_query, banned=_COMPANY_BANNED):
+        # Keep a theme-based discovery query while staying within the overall
+        # cap; never let the user's second industry be silently starved.
+        return [*kept[: MAX_QUERIES - 1], theme_query]
     return kept[:MAX_QUERIES]
 
 

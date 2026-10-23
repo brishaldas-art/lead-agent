@@ -12,10 +12,13 @@ _logger = logging.getLogger(__name__)
 
 # Scoring rules: each tuple contains keywords and an associated score.
 SCORE_RULES: List[Tuple[Tuple[str, ...], int]] = [
+    # Contact pages are especially valuable for official email and address
+    # evidence; rank them above team/about/CSR pages when the page cap is tight.
+    (("contact", "contact-us", "contactus", "reach-us", "get-in-touch"), 7),
     (("team", "leadership", "management", "people", "board", "council", "office-bearers"), 5),
+    (("sponsor", "partners", "csr", "esg", "sustainability", "governance"), 4),
     (("about", "who-we-are", "committee", "society", "students"), 3),
-    (("contact", "reach-us"), 3),
-    (("sponsor", "partners", "csr", "press", "media"), 2),
+    (("press", "media"), 2),
 ]
 
 SKIP_KEYWORDS = (
@@ -70,7 +73,8 @@ def score_links(html: str, base_url: str, max_links: int = 5) -> List[Tuple[str,
         # Build absolute URL and strip fragment
         abs_url = urljoin(base_url, href)
         parsed = urlparse(abs_url)
-        abs_url = urlunparse(parsed._replace(fragment=""))
+        normalized_path = parsed.path.rstrip("/") or "/"
+        abs_url = urlunparse(parsed._replace(path=normalized_path, fragment=""))
         # Hostname must match base (ignore leading www.)
         if _clean_hostname(abs_url) != base_host:
             continue

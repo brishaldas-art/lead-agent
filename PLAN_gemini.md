@@ -107,7 +107,7 @@ All Gemini traffic goes through **one gateway module**. No other file imports th
 | Fuzzy match | `rapidfuzz` | Yes | Dedupe, grounding, name match |
 | Cache | `diskcache` | Yes | Caches searches, pages **and every Gemini call** |
 | Sheets export | `gspread` + `google-auth` | Yes | Service account, no OAuth browser step |
-| Tabular | `pandas` | Yes | CSV and dedupe |
+| Tabular export | Python `csv` + `sqlite3` | Yes | No extra dataframe dependency |
 | CLI / UI | `typer`, optional `streamlit` | Yes | One-command run |
 | Logging | `rich` | Yes | Live agent trace and a token-budget panel in the demo |
 | Config | `python-dotenv` | Yes | Loads `.env` |
@@ -140,7 +140,9 @@ lead-agent/
 │   ├── generic_inboxes.txt
 │   └── sample_brochure.pdf
 └── outputs/
-    ├── leads.csv
+    ├── lead_all.csv             # candidate/review export, never accepted-lead status
+    ├── leads.csv                 # verified accepted leads only
+    ├── audit_log.csv
     ├── leads.db
     ├── agent_trace.log
     ├── .llm_cache/           # Gemini response cache (git-ignored, but keep a warmed copy for the demo)
@@ -261,7 +263,7 @@ class SearchPlan(BaseModel):
 ## Step 2: Autonomous Lead Discovery (Web Search)
 
 **Marks served:** Agent flow & autonomy (**40**), the largest single item.
-**Gemini calls:** about 3 for classification + up to 2 for re-planning.
+**Gemini calls:** batched classification, plus at most one re-plan call when usable official/archived page yield is below target; the global run budget remains the hard ceiling.
 
 ### 2.1 Pipeline
 
@@ -281,7 +283,7 @@ flowchart TD
     K -->|No| M[Clean text + keep raw HTML]
     L --> M
     M --> N{Enough orgs with pages?}
-    N -->|No, rounds left| R["Gemini: propose up to 4 new queries - 1 call, max 2 rounds"]
+    N -->|No, one round left| R["Gemini: propose up to 4 new queries - at most 1 call"]
     R --> B
     N -->|Yes| O[Org + page bundles to Step 3]
 ```
@@ -311,7 +313,7 @@ flowchart TD
 | Is this search result an org worth pursuing? | **Gemini**, batched, from title and snippet only |
 | Official domain of a result | **Code:** from the result's URL |
 | Official site of a brochure seed org | **Code:** top non-directory result with fuzzy title match |
-| **Should we search more?** (autonomy showpiece) | **Code checks yield; Gemini proposes new queries** (max 2 rounds) |
+| **Should we search more?** (autonomy showpiece) | **Code checks usable-page yield; Gemini proposes new queries** (max 1 round) |
 | When to stop | **Code:** max pages per org, max orgs, time budget, call budget |
 | What to do when a page fails | **Code:** fixed fallback ladder |
 
@@ -328,33 +330,33 @@ flowchart TD
 **Failure ladder (the "handles dead pages" proof for the 40 marks):**
 
 ```
-1. httpx GET (timeout 10s)
-2. retry x2 with backoff (tenacity) on timeout/5xx
-3. try alternate URL forms (https<->http, with/without www, trailing slash)
-4. Wayback snapshot of the same URL
-5. Search fallback: ddgs  site:{domain} "{role keyword}"  -> use snippets
-6. Mark page as dead in the log, continue with the next page/org
+1. httpx GET (four-second timeout)
+2. retry once with short backoff on transport errors; preserve HTTP status codes
+3. try simple scheme/www variants; stop live variants after explicit 401/403/429
+4. consult public Wayback when the live page is unavailable; a richer archive may supplement a thin live page
+5. retain a same-domain search snippet as discovery-only evidence when no page loads
+6. mark unavailable pages and continue; never bypass bot protection or treat a snippet/archive as current location proof
 ```
 
-**Re-planning rule (new):** if after the first pass fewer than `MIN_ORGS` (default 15) orgs have usable pages and call budget remains, make **one** Gemini call with the category, city, queries already used and the count found; it returns up to 4 *new* queries. Code validates them (length, no URLs, not a repeat) and loops back. The trace shows *"yield low → agent re-planned → 4 new queries"*, which is great for the demo.
+**Re-planning rule:** if after the first pass fewer than `MIN_ORGS` (default 5) organizations have usable official/archived page text and time/call budget remains, make at most **one** Gemini call with category, city, queries already used and the usable-page count. It returns up to 4 queries of 3–5 words; code rejects URLs, repeats, and banned terms. Snippet-only or failed-fetch candidates do not count toward the target.
 
 ### 2.4 Input
 
 ```python
 SearchPlan   # from Step 1
-Limits(max_queries=10, max_orgs=25, max_pages_per_org=5, max_depth=2,
-       time_budget_min=15, replan_rounds=2)
+Limits(max_queries=10, max_orgs=20, max_candidates=40,
+       max_pages_per_org=3, time_budget_min=8, replan_rounds=1)
 ```
 
 ### 2.5 Process
 
-1. Run each query through `ddgs` (`max_results≈8`), `time.sleep(1.5)` between calls, cache results.
-2. **Number every result** (`id`, title, snippet, url). Code drops directories, news, Wikipedia and social domains (kept only as evidence).
-3. **Batch classify:** pack up to 30 results into one prompt. Gemini returns `[{result_id, relevant, org_name, category, city}]`. Code then checks that `org_name` fuzzy-appears in that result's title or snippet (≥ 80), otherwise discards it.
+1. Resolve brochure `seed_orgs` first with exact-name searches; accept only name-matched, brand-consistent domains. Seeds remain first in the crawl queue.
+2. Run generated queries through `ddgs` (`max_results≈8`) with a 48-hour TTL cache; normalize and deduplicate URL variants before classification.
+3. **Filter and batch classify:** code drops blocked domains, file types, listicles and directory titles; Gemini classifies up to 30 results per call. Names must be grounded in the source title/snippet. If Gemini is unavailable, domain-matched title candidates may be retained as explicitly unverified review records, not accepted leads.
 4. Build `OrgCandidate` from the *result row's URL* via `tldextract`; dedupe by root domain and fuzzy name.
-5. Inject brochure `seed_orgs` first (highest priority); resolve each to an official site by code.
-6. Crawl all orgs first (network only, small thread pool, polite per-domain delay), **then** run the Step 3 Gemini calls, so rate-limit waiting overlaps with nothing important.
-7. Re-plan if yield is low, then hand over to Step 3.
+5. Crawl the homepage and a small same-domain link set with bounded retries, a small worker pool, a page cache, and an eight-minute default Step 2 discovery budget.
+6. Retain failed-fetch and snippet-only candidates for review. Only usable official/archived page text counts toward the re-plan target and can provide primary Step 3 evidence.
+7. If the usable-page yield is low, make at most one validated re-plan call, then hand all retained candidates to Step 3; Step 5 decides accepted-lead eligibility.
 
 ### 2.6 Output Schema
 
@@ -397,12 +399,12 @@ class PageBundle(BaseModel):
 |---|---|
 | DuckDuckGo rate-limits | Cache + 1.5 s delay + about 10 queries; backoff; if blocked, run from cache |
 | Search returns irrelevant orgs | Gemini relevance flag plus category/city keyword check in code |
-| JS-rendered team page returns empty text | `len(text) < 300` then Wayback then search-snippet fallback |
-| Same org found 5 times | Dedupe by root domain + fuzzy name **before** any Gemini call where possible |
-| Infinite crawl | Hard limits: depth, pages per org, total time, visited set |
-| Colleges use `.ac.in` / `.edu.in`, societies on subpages | College domain is the org root, society pages are `page_type=team` |
-| Gemini mislabels a directory site as an org | Domain blocklist in code runs *before* classification |
-| Quota hit mid-classification | Remaining results are skipped; seeds and already-classified orgs continue |
+| JS-rendered team page returns empty text | A live page stays primary; a richer public Wayback copy may supplement it; snippets remain review-only |
+| Same org found 5 times | Normalize scheme/www/trailing slash and dedupe URLs before classification; dedupe orgs by root domain |
+| Infinite crawl | Hard limits: pages per org, candidate/usable-org caps, request timeouts and Step 2 discovery budget |
+| City spelling differs (e.g. Bangalore/Bengaluru) | Match a configurable set of common aliases in discovery summaries and the final official-page check |
+| Gemini mislabels a directory site as an org | Blocked domains/listicle filters plus brand/domain consistency checks run before crawling |
+| Quota hit mid-classification | Keep only brand/domain-matched title candidates as `needs_review`; never mark fallback relevance verified or export it as accepted |
 
 ### 2.8 Features Dropped in This Step
 
@@ -423,7 +425,7 @@ class PageBundle(BaseModel):
 ## Step 3: Decision-Maker Identification
 
 **Marks served:** Agent flow (40) and Contact accuracy (30).
-**Gemini calls:** about 1 per org (about 25), plus up to 5 for snippet fallbacks.
+**Gemini calls:** batched with up to `BATCH_ORGS=5` organizations per smart request, plus a globally capped snippet fallback.
 
 ### 3.1 Pipeline
 
@@ -470,11 +472,11 @@ pages: list[PageBundle]       # from Step 2
 ### 3.5 Process
 
 1. For each page, build windows ±600 chars around any role keyword; merge overlaps; dedupe; **cap the combined text at about 6,000 characters per org** (about 1,500 tokens).
-2. **One Gemini call per org** with all windows, each labelled with its page URL. *Budget mode:* `BATCH_ORGS=3` packs three small orgs into one call, with outputs keyed by `org_id`.
+2. **Batch organizations** with all windows labelled by page URL. The current safe profile uses `BATCH_ORGS=5`, with outputs keyed by `org_id`; the global call budget can stop further uncached work.
 3. **Grounding check per candidate:** name found in the page text (case-insensitive, fuzzy ≥ 92) **and** role present within 300 chars of the name. Otherwise discard.
 4. Score = role-priority weight + page-type bonus (`team` > `about`) + non-Wayback bonus.
 5. Pick the top score; keep `source_url`.
-6. If nothing: run `site:{domain} "{top role}"` search and make **one** Gemini call on the snippets (global cap `MAX_SNIPPET_FALLBACKS=5`).
+6. If nothing: run `site:{domain} "{top role}"` search and inspect same-domain snippets (global cap `MAX_SNIPPET_FALLBACKS=2`).
 
 ### 3.6 Output Schema
 
@@ -656,16 +658,18 @@ flowchart TD
     I -->|No| K[Retry x3 then keep CSV and print the error + import instructions]
 ```
 
+**Implementation note:** Step 5 writes `outputs/lead_all.csv` for every retained organization candidate, plus the six-column verified-only `outputs/leads.csv`, `outputs/leads.db`, and `outputs/audit_log.csv` before attempting Sheets. `lead_all.csv` includes candidate status, official location/sponsorship evidence, Step 3 people, observed public email addresses with review labels, verified contacts, and review reasons. The main worksheet remains exactly six columns and contains only accepted leads. Sheets export is opt-in via both `SHEET_ID` and `GOOGLE_CREDENTIALS`; the implementation does not change sharing permissions. The final location gate accepts configured city aliases only when supported by live official-domain page text.
+
 ### 5.2 Why These Tools
 
 | Tool | Role | Why |
 |---|---|---|
 | `pydantic` | Enforce the exact six-field schema | Invalid rows never reach the sheet |
 | `gspread` + `google-auth` | Push to Google Sheets | Free; service account needs **no OAuth browser flow**, so it is hands-free |
-| `pandas` | Dedupe and CSV | One-liners |
-| `sqlite3` (stdlib) | Local DB copy | Satisfies "Google Sheet **or database**" as a fallback |
-| `tenacity` | Retry sheet writes | Sheets API sometimes returns 429/5xx |
-| `rich` | Final summary table | Nice demo output |
+| `csv` (stdlib) | Six-column leads CSV and audit sidecar | No extra dataframe dependency |
+| `sqlite3` (stdlib) | Durable local leads and audit database | Satisfies "Google Sheet **or database**" as a fallback |
+| Bounded write reconciliation | Retry transient Sheets 429/5xx without duplicate appends | Local files remain intact on failure |
+| Standard CLI output | Export counts, file paths, drop reasons, and Sheets status | Works without additional UI dependencies |
 
 ### 5.3 Final Sheet Schema (exactly six columns, in this order)
 
@@ -678,7 +682,7 @@ flowchart TD
 | 5 | **Contact Channel** | `contact.channel` | Real email or real profile URL |
 | 6 | **Verification Status** | `contact.status` | Only `Verified` or `Pattern-Derived` |
 
-> **No extra columns on the main sheet.** Evidence URLs and check details go to a **second worksheet** `audit_log` and to `outputs/agent_trace.log`.
+> **No extra columns on the main sheet.** Evidence URLs and check details go to a **second worksheet** `audit_log`, `outputs/audit_log.csv`, and the local SQLite audit table.
 
 ```python
 class SheetRow(BaseModel):
@@ -695,7 +699,7 @@ class SheetRow(BaseModel):
 1. Convert each `VerifiedLead` to `SheetRow`. **Invalid rows are dropped and logged**, never patched with guesses.
 2. **Location rule:** city from the org's own page (contact/footer address); fall back to the search city only if the org's pages confirm it; otherwise drop the row.
 3. **Dedupe:** key = `(root_domain, normalized contact_channel)`; fuzzy-match org names ≥ 92.
-4. Write `outputs/leads.csv` and `outputs/leads.db` **before** touching the network.
+4. Write `outputs/lead_all.csv`, `outputs/leads.csv`, `outputs/audit_log.csv`, and `outputs/leads.db` **before** touching the Sheets network.
 5. **Sheets push:** `gspread.service_account(filename=...)`, open by `SHEET_ID`, write header, `append_rows(values)` in one batch.
 6. Set the sheet to *Anyone with the link: Viewer* once, manually.
 
@@ -714,7 +718,7 @@ class SheetRow(BaseModel):
 
 | Issue | Fix |
 |---|---|
-| Sheets API quota / 429 | One batch `append_rows` + `tenacity` retry |
+| Sheets API quota / 429 or transient 5xx | Bounded, reread-before-retry append reconciliation (up to 3 attempts) |
 | Credentials missing on the judges' machine | Pipeline still writes CSV/SQLite and prints a clear setup message |
 | Duplicates across runs | Read existing sheet rows first; skip keys already present |
 | Header mismatch | Always write/validate the header row first |
@@ -752,7 +756,7 @@ class SheetRow(BaseModel):
 ```bash
 pip install google-genai pydantic pymupdf ddgs httpx tenacity trafilatura \
             beautifulsoup4 lxml tldextract email-validator dnspython \
-            rapidfuzz diskcache gspread google-auth pandas typer rich python-dotenv
+            rapidfuzz diskcache gspread google-auth typer rich python-dotenv
 ```
 
 ### 6.3 Choosing Models (never hard-code names)
@@ -910,10 +914,10 @@ def ask(schema: type[BaseModel], prompt: str, *, tier="fast", tag="", max_out=80
 
 | Quantity | Value |
 |---|---|
-| Calls per full 25-org run | about 40 (hard cap 45) |
-| Time at 5 RPM | about 8 min of paced calls (overlaps with crawling) |
-| Full runs per day on **one** model at 100 RPD | 2 |
-| With a 2-model `smart` chain | about 4 runs/day |
+| Calls per run | Hard cap 10 accounted Gemini responses; actual use depends on cache and result batches |
+| Discovery runtime | Eight-minute default Step 2 budget, subject to one in-flight search/request timeout |
+| Daily calls | Use the live quota shown in AI Studio; code does not assume 100 free requests |
+| Runs per day | Varies with the user's remaining quota and cached responses |
 | Tokens per run | about 150-200k input + about 15k output |
 | TPM pressure | Negligible, since calls are spread over minutes |
 
@@ -928,7 +932,7 @@ $$\text{runs per day} \approx \frac{\text{RPD}_{\text{fast}} + \text{RPD}_{\text
 | # | Tactic | Effect |
 |---|---|---|
 | 1 | **Code before LLM.** Steps 4 and 5 use zero calls; seed-org site resolution, URLs, domains, emails use zero calls | Removes about half of all possible calls |
-| 2 | **Batch many items per request.** 30 search results per classify call; optional 3 orgs per extraction call (`BATCH_ORGS=3`) | Cuts requests 10x on Step 2, up to 3x on Step 3 |
+| 2 | **Batch many items per request.** Up to 30 search results and 5 people-extraction organizations per call (`BATCH_ORGS=5`) | Cuts repeated classification and extraction calls |
 | 3 | **Prefilter text to role windows**, cap 6,000 chars per org | 5-10x fewer input tokens |
 | 4 | **Dedupe before asking** (domain blocklist, root-domain dedupe, skip already-cached) | Never pay twice for the same org |
 | 5 | **Disk cache on every call**, plus a warmed cache shipped for the demo | Re-runs cost 0 requests |
@@ -936,7 +940,7 @@ $$\text{runs per day} \approx \frac{\text{RPD}_{\text{fast}} + \text{RPD}_{\text
 | 7 | **Minimal thinking** and `max_output_tokens` caps (about 800 for lists, 8000 only for PDF transcription) | Stops hidden thinking tokens from eating quota |
 | 8 | **Compact, schema-locked prompts** (no examples unless needed, no restating the schema in text) | Fewer input tokens per call |
 | 9 | **Model fallback chain** | New quota pool when one model's daily limit is gone |
-| 10 | **Hard budget caps:** `MAX_CALLS_PER_RUN=45`, `MAX_ORGS=25`, `MAX_SNIPPET_FALLBACKS=5`, `REPLAN_ROUNDS=2` | Predictable, never runs away |
+| 10 | **Hard budget caps:** `MAX_CALLS_PER_RUN=10`, `MAX_ORGS=20`, `MAX_CANDIDATES=40`, `MAX_SNIPPET_FALLBACKS=2`, `REPLAN_ROUNDS=1` | Predictable, never runs away |
 | 11 | **Priority-ordered degradation** (below) | When quota runs low, drop optional work first |
 | 12 | **Pre-flight estimate** `len(text)/4` and **post-flight actuals** from `usage_metadata` | Cheap local accounting without extra calls |
 
@@ -980,7 +984,7 @@ class Budget:
     def from_env(cls):
         e = os.environ.get
         return cls(e("RPM_LIMIT", 5), e("TPM_LIMIT", 200_000), e("RPD_LIMIT", 100),
-                   int(e("MAX_CALLS_PER_RUN", 45)), float(e("SAFETY", 0.8)))
+                   int(e("MAX_CALLS_PER_RUN", 10)), float(e("SAFETY", 0.8)))
 
     def _today(self): return datetime.now(PT).strftime("%Y-%m-%d")   # quota day = Pacific
 
@@ -1195,7 +1199,7 @@ For each result return result_id, whether it is a relevant {category_desc} organ
 2. **0:20-1:20:** run the prompt; terminal trace shows search, link following, a dead page recovered by fallback, and a **re-plan** when yield was low.
 3. **1:20-2:00:** run with the brochure PDF; show extracted facts and seed orgs.
 4. **2:00-2:30:** sheet populates; click an evidence URL to prove a contact is real.
-5. **2:30-2:50:** show the **budget panel**: about 40 requests, tokens per step, cache hits; mention a second run costs 0.
+5. **2:30-2:50:** show the **budget panel**: accounted calls up to the 10-call run cap, tokens per step, and cache hits; reruns may reuse cached work.
 6. **2:50-3:00:** state the guarantees: Gemini never writes emails or URLs, generic inboxes rejected, honest labels, 100% free stack.
 
 ---
@@ -1215,11 +1219,14 @@ RPD_LIMIT=100
 SAFETY=0.8
 
 # Run caps
-MAX_CALLS_PER_RUN=45
-MAX_ORGS=25
-MAX_SNIPPET_FALLBACKS=5
-REPLAN_ROUNDS=2
-BATCH_ORGS=1          # set to 3 in budget mode
+MAX_CALLS_PER_RUN=10
+MAX_ORGS=20
+MAX_CANDIDATES=40
+MIN_ORGS=5
+MAX_SNIPPET_FALLBACKS=2
+REPLAN_ROUNDS=1
+TIME_BUDGET_MIN=8
+BATCH_ORGS=5
 
 # Dev: replay cache only, never call the API
 OFFLINE=0
@@ -1248,7 +1255,6 @@ rapidfuzz
 diskcache
 gspread
 google-auth
-pandas
 typer
 rich
 python-dotenv

@@ -14,6 +14,14 @@ from typing import List, Dict, Tuple
 BLOCKED_DOMAINS: set[str] = {
     "linkedin.com",
     "facebook.com",
+    # Search/ad redirectors are not organization websites. In particular,
+    # SERP ad click URLs must not become the candidate's root domain.
+    "bing.com",
+    "google.com",
+    "duckduckgo.com",
+    "search.yahoo.com",
+    "doubleclick.net",
+    "googleadservices.com",
     "instagram.com",
     "twitter.com",
     "x.com",
@@ -26,6 +34,17 @@ BLOCKED_DOMAINS: set[str] = {
     "indiamart.com",
     "clutch.co",
     "goodfirms.co",
+    # Company directories, corporate-data aggregators and product catalogs
+    # may help discover a name, but must not be used as the lead's homepage.
+    "zaubacorp.com",
+    "findglocal.com",
+    "thecompanycheck.com",
+    "companydetails.in",
+    "infoqik.com",
+    "enfsolar.com",
+    "corporatedir.com",
+    "tofler.in",
+    "mca.gov.in",
     "crunchbase.com",
     "tracxn.com",
     "timesofindia.indiatimes.com",
@@ -34,6 +53,7 @@ BLOCKED_DOMAINS: set[str] = {
     "moneycontrol.com",
     "ndtv.com",
     "inc42.com",
+    "thecsrjournal.in",
 }
 
 BLOCKED_EXTENSIONS = (
@@ -51,16 +71,16 @@ BLOCKED_EXTENSIONS = (
 LISTICLE_PATTERNS: List[re.Pattern] = [
     re.compile(r"top \d+", re.I),
     re.compile(r"best \d+", re.I),
-    re.compile(r"\\bbest\\b.*\\bin\\b", re.I),
-    re.compile(r"\\blist of\\b", re.I),
-    re.compile(r"\\bdirectory\\b", re.I),
+    re.compile(r"\bbest\b.*\bin\b", re.I),
+    re.compile(r"\blist of\b", re.I),
+    re.compile(r"\bdirectory\b", re.I),
     re.compile(r"companies in", re.I),
-    re.compile(r"\\bvs\\b", re.I),
-    re.compile(r"\\breviews?\\b", re.I),
+    re.compile(r"\bvs\b", re.I),
+    re.compile(r"\breviews?\b", re.I),
 ]
 
 # Separate directory title check (different drop reason)
-DIRECTORY_PATTERN = re.compile(r"\\bdirectory\\b", re.I)
+DIRECTORY_PATTERN = re.compile(r"\bdirectory\b", re.I)
 
 _logger = __import__("logging").getLogger("agent")
 

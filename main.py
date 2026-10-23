@@ -76,11 +76,108 @@ def main() -> int:
 
     print("\nRunning discovery...")
     records = run_discovery(plan)
-    print(f"\nOrganizations with usable pages: {len(records)}")
+    usable_page_orgs = sum(
+        1 for rec in records
+        if any(str(page.get("status", "")).casefold() in {"ok", "wayback"} and str(page.get("text", "")).strip() for page in rec.get("pages", []))
+    )
+    print(f"\nDiscovered organization candidates: {len(records)}")
+    print(f"Organizations with usable official/archived pages: {usable_page_orgs}")
     for rec in records:
         org = rec["org"]
         statuses = ", ".join(p["status"] for p in rec["pages"])
-        print(f"- {org.org_name} | {org.domain} | pages: {statuses}")
+        print(f"- {org.org_name} | {org.domain} | candidate status: {rec.get('candidate_status', 'unknown')} | pages: {statuses or 'none'}")
+        verification = rec.get("verification", {})
+        if verification:
+            print(f"  Evidence check: {verification['status']}")
+            for label, key in (
+                ("Local-presence evidence", "location_evidence_urls"),
+                ("Direct sponsorship evidence", "direct_sponsorship_evidence_urls"),
+                ("Related CSR/community signals (not sponsorship)", "related_csr_community_evidence_urls"),
+            ):
+                for url in verification.get(key, []):
+                    print(f"    - {label}: {url}")
+        discovery_evidence = rec.get("discovery_evidence", [])
+        if discovery_evidence:
+            print("  Discovery-only social/list evidence (not official-site proof):")
+            for item in discovery_evidence:
+                print(f"    - {item['evidence_type']}: {item['source']}")
+                if item.get("title"):
+                    print(f"      {item['title']}")
+                if item.get("snippet"):
+                    print(f"      {item['snippet'][:240]}")
+
+    from agent.step3_people import identify_people
+
+    print("\nRunning Step 3: decision-maker identification...")
+    # Try to ground a contact for every organization with usable official pages.
+    # Step 5 remains the final strict city gate; do not hide potentially useful
+    # contact evidence merely because the organization's location is unverified.
+    people_result = identify_people(records)
+    print(f"Grounded decision-makers found: {len(people_result.identified)}")
+    for item in people_result.identified:
+        print(
+            f"- {item.org.org_name} | {item.person.full_name} | {item.person.role} "
+            f"| score: {item.person.role_score:.1f} | source: {item.person.source_url}"
+        )
+    print(f"Organizations without a grounded decision-maker: {len(people_result.dropped)}")
+    for item in people_result.dropped:
+        print(f"- {item['org_name']} | {item['domain']} | {item['reason']}")
+    print(
+        f"Step 3 model batches: {people_result.model_batches}; "
+        f"snippet fallbacks used: {people_result.fallback_searches}"
+    )
+
+    from agent.step4_contacts import verify_contacts
+
+    print("\nRunning Step 4: code-only contact verification...")
+    contact_result = verify_contacts(people_result, records)
+    print(f"Contacts verified or pattern-derived: {len(contact_result.verified)}")
+    for lead in contact_result.verified:
+        print(
+            f"- {lead.org.org_name} | {lead.person.full_name} | {lead.contact.channel} "
+            f"| {lead.contact.status} ({lead.contact.channel_type}) "
+            f"| evidence: {lead.contact.evidence_url} "
+            f"| sources: {', '.join(str(url) for url in lead.contact.supporting_urls)} "
+            f"| checks: {', '.join(lead.contact.checks_passed)}"
+        )
+    verified_contact_domains = {
+        str(item.org.domain).casefold() for item in contact_result.verified
+    }
+    candidate_domains = {
+        str(rec["org"].domain).casefold() for rec in records if rec.get("org") is not None
+    }
+    print(f"Organizations without a verified contact: {len(candidate_domains - verified_contact_domains)}")
+    for item in contact_result.dropped:
+        print(f"- {item['org_name']} | {item['domain']} | {item['reason']}")
+
+    from agent.step5_export import export_verified_leads
+
+    print("\nRunning Step 5: validation and export...")
+    export_result = export_verified_leads(
+        contact_result,
+        records,
+        run_context={"category": plan.category, "target_location": plan.city or ""},
+        people_result=people_result,
+    )
+    print(
+        f"New local rows: {export_result.rows_added}; "
+        f"total local leads: {export_result.total_rows}; "
+        f"duplicates skipped: {export_result.duplicates_skipped}; "
+        f"invalid/unverified rows dropped: {len(export_result.dropped)}"
+    )
+    print(f"CSV: {export_result.csv_path}")
+    print(f"All candidates CSV: {export_result.lead_all_csv_path}")
+    print(f"Audit CSV: {export_result.audit_csv_path}")
+    print(f"SQLite: {export_result.database_path}")
+    print(
+        f"Candidate review records in SQLite: {export_result.review_candidates}; "
+        f"pipeline run ID: {export_result.run_id}"
+    )
+    for item in export_result.dropped:
+        print(f"- {item['org_name']} | {item['reason']}")
+    print(f"Google Sheets: {export_result.sheets_message}")
+    if export_result.sheet_url:
+        print(f"Sheet: {export_result.sheet_url}")
 
     return 0
 

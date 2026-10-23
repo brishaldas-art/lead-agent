@@ -3,7 +3,9 @@ Ensures Gemini never supplies URLs; every org name is grounded against the origi
 """
 
 import logging
+import re
 from typing import List, Dict
+from urllib.parse import urlparse
 
 from rapidfuzz import fuzz
 
@@ -11,6 +13,8 @@ from agent.gemini_client import ask
 from agent.prompts import CLASSIFY
 from agent.schemas import ClassifiedBatch, ClassifiedResult
 from agent.filters import filter_results
+from agent.location import text_mentions_city
+from agent.evidence import domain_matches_name
 
 _logger = logging.getLogger("agent")
 
@@ -23,6 +27,41 @@ def _truncate(text: str, limit: int = 200) -> str:
         return ""
     single_line = " ".join(text.splitlines())
     return single_line[:limit]
+
+
+def _mentions_location(location: str | None, evidence: str) -> bool:
+    """Accept the requested city or a configured alias in the evidence."""
+    return text_mentions_city(evidence, location)
+
+
+def _quota_fallback_candidate(item: Dict, category: str, city: str | None) -> Dict | None:
+    """Create a review-only candidate from a title when Gemini is unavailable.
+
+    The result is never eligible for the verified-lead export until a later
+    normal classification confirms relevance.
+    """
+    title = " ".join(str(item.get("title", "")).split())
+    if not title:
+        return None
+    name = title
+    for separator in (" | ", " — ", " – ", " - ", ":"):
+        if separator in name:
+            name = name.split(separator, 1)[0].strip()
+            break
+    name = re.sub(r"\b(official\s+(site|website)|home\s*page|welcome)\b", "", name, flags=re.I).strip(" -|:")
+    if len(name) < 3 or not domain_matches_name(name, str(item.get("url", ""))):
+        return None
+    text = f"{title} {item.get('snippet', '')}"
+    return {
+        "org_name": name,
+        "category": "College Delegation" if category == "College Delegation" else "Sponsor",
+        "city": city if _mentions_location(city, text) else None,
+        "url": item.get("url", ""),
+        "title": title,
+        "snippet": str(item.get("snippet", "")),
+        "relevance_verified": False,
+        "classification_status": "llm_unavailable_needs_review",
+    }
 
 
 def classify_results(results: List[Dict], category: str, city: str | None) -> List[Dict]:
@@ -49,8 +88,12 @@ def classify_results(results: List[Dict], category: str, city: str | None) -> Li
         lines = []
         for idx, item in enumerate(chunk, start=start):
             title = item.get("title", "")
+            try:
+                source_host = (urlparse(str(item.get("url", ""))).hostname or "").lower()
+            except ValueError:
+                source_host = ""
             snippet = _truncate(item.get("snippet", ""))
-            lines.append(f"{idx} | {title} | {snippet}")
+            lines.append(f"{idx} | source: {source_host} | {title} | {snippet}")
         block = "\n".join(lines)
         prompt = CLASSIFY.format(
             category=category,
@@ -66,7 +109,11 @@ def classify_results(results: List[Dict], category: str, city: str | None) -> Li
             max_out=1500,
         )
         if batch is None:
-            _logger.warning("Gemini classification returned no result for a batch.")
+            _logger.warning("Gemini classification unavailable; preserving only domain-matched review candidates.")
+            for item in chunk:
+                candidate = _quota_fallback_candidate(item, category, city)
+                if candidate is not None:
+                    outputs.append(candidate)
             continue
         for res in batch.results:
             # Ensure we have the original item
@@ -79,13 +126,20 @@ def classify_results(results: List[Dict], category: str, city: str | None) -> Li
             combined = f"{original.get('title', '')} {original.get('snippet', '')}".lower()
             if fuzz.partial_ratio(res.org_name.lower(), combined) < 80:
                 continue
+            # Do not let the query's target city become an ungrounded claim.
+            # Keep the requested city only when the result title/snippet states it.
+            verified_city = city if _mentions_location(city, combined) else None
+            if city is None and _mentions_location(res.city, combined):
+                verified_city = res.city
             output_item = {
                 "org_name": res.org_name,
                 "category": res.category,
-                "city": res.city if res.city is not None else city,
+                "city": verified_city,
                 "url": original.get("url", ""),
                 "title": original.get("title", ""),
                 "snippet": original.get("snippet", ""),
+                "relevance_verified": True,
+                "classification_status": "gemini_grounded",
             }
             outputs.append(output_item)
     return outputs

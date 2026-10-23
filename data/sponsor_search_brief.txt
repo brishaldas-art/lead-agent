@@ -1,0 +1,10 @@
+Find up to three potential event-sponsor leads in the {industry} sector that have evidence of operating in {city}, India.
+
+Prioritize company-owned websites and pages. Public LinkedIn company snippets, eligible Instagram business-profile snippets, and directory/listicle snippets may be used only to discover company names. Run a separate exact-name search for a likely official website; treat a matching result as provisional unless the page itself supports the company identity.
+
+For each organization, preserve source URLs and short evidence excerpts. Assess separately whether:
+1. The organization genuinely operates in the requested industry.
+2. Its presence in {city} is explicitly supported by a source.
+3. There is public evidence of CSR, education, student, community, event, grant, or sponsorship activity.
+
+Do not infer local presence from the search query, general knowledge, or a national footprint. Do not treat an ad/tracking redirect, search engine, directory, listicle, social profile, or unrelated page as the organization's official website. If sponsor activity or local presence is not evidenced, state that clearly rather than guessing.

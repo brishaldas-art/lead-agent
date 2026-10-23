@@ -1,6 +1,6 @@
 # Lead Discovery Agent
 
-An agent that takes a search prompt, an event brochure PDF, or both, and finds sponsors and college delegations. It reads public web pages, identifies organizations, and will (in later parts) name a decision-maker and a real contact for each one. The final output is a Google Sheet of verified leads.
+An agent that takes a search prompt, an event brochure PDF, or both, and finds sponsors and college delegations. It reads public web pages, identifies organizations, and grounds either a decision-maker or, when no person-specific contact can be verified, a clearly labeled company-level contact. Contact verification and local CSV/SQLite export are implemented; Google Sheets export is optional when local service-account credentials are configured. The final goal is a sheet of verified leads.
 
 The agent never invents data. Gemini is used only for language tasks. URLs, domains, emails and grounding checks are done in code.
 
@@ -10,9 +10,9 @@ The agent never invents data. Gemini is used only for language tasks. URLs, doma
 |---|---|---|
 | 1 | Input processing: prompt and PDF to `SearchPlan` | Done |
 | 2 | Lead discovery: search, filter, classify, crawl, re-plan | Implemented. Offline tests pass. Live run verification in progress |
-| 3 | Decision-maker identification | Not started |
-| 4 | Contact extraction and verification (code only) | Not started |
-| 5 | Export to Google Sheets and CSV | Not started |
+| 3 | Decision-maker identification: role-based extraction, grounding, ranking and snippet fallback | Implemented. Offline tests pass |
+| 4 | Contact extraction and verification (code only) | Implemented. Offline tests pass |
+| 5 | Validation, deduplication and export to CSV/SQLite with optional Google Sheets | Implemented. Offline tests pass; Sheets requires local credentials |
 
 ## Requirements
 
@@ -42,7 +42,7 @@ In `.env`, set:
 
 - `GEMINI_API_KEY`: your key from https://aistudio.google.com/app/apikey
 - `MODEL_FAST` and `MODEL_SMART`: model names your key accepts
-- `OFFLINE=1` while developing, so nothing reaches the API
+- `OFFLINE=1` while developing, so nothing reaches the API. Set `OFFLINE=0` only when you explicitly intend to run a live search/model workflow.
 
 Check which models work. This sends one small request per model:
 
@@ -74,6 +74,26 @@ Running with no arguments prints a usage message and exits with code 1.
 
 The program prints the plan (source, category, city, theme, industries, seed organizations and queries), then the discovery results (organizations found, with their homepage and whether they have a usable fetched page).
 
+### Low-token, evidence-focused sample
+
+To search one industry and city while allowing at most one Gemini classification call:
+
+```powershell
+python -m scripts.run_small_sample --city "Kolkata" --industry "renewable energy"
+```
+
+This discovery-only run uses at most 1 Gemini call. It runs up to 3 broad searches, 2 public social searches, and up to 7 exact-name lookups seeded from public LinkedIn/Instagram snippets or names explicitly present in list-result snippets. Social URLs are never treated as organization websites; list-result snippets only seed a separate company-name lookup. At most 30 non-social results are classified in one batch; output is capped at 3 organizations and 3 pages per organization by default. It writes evidence, verification flags, status codes, and token usage to `outputs/small_sample.json`.
+
+For an end-to-end live test with fewer tokens, add `--full-pipeline`:
+
+```powershell
+python -m scripts.run_small_sample --city "Kolkata" --industry "renewable energy" --full-pipeline
+```
+
+Deterministic city mode skips the Step 1 model call, limits classification to 18 candidates, batches all selected organizations (3 by default, at most 5) into one Step 3 call, and permits at most one Step 3 fallback call within a 3-call Gemini budget. Transient API failures may cause additional retry attempts; the reported token usage is the provider's response metadata. It runs live search/page fetch and Step 4's ordinary contact checks, then writes Step 5 outputs to `outputs/live_sample/`. Google Sheets is forcibly disabled for this test. Set `OFFLINE=0` and configure `GEMINI_API_KEY` in the local `.env`; the runner exits before searching if these are missing or offline mode remains enabled. Never paste the key into chat.
+
+The corresponding research brief is in `data/sponsor_search_brief.txt`. Company-directory hosts are filtered as discovery sources, and a candidate homepage must also resemble the organization's brand or initials. Public social/list snippets can seed bounded name lookups, but are never treated as company-site evidence. Enrichment is capped (two social searches and up to four exact-name lookups) and only runs when fewer than `MIN_ORGS` candidates have usable official/archived pages. Brochure seeds are resolved first by exact-name search and code-only domain checks. Location evidence, direct sponsorship wording, and weaker CSR/community signals are reported separately; CSR keywords alone do not count as sponsorship.
+
 ## How it works
 
 ### Part 1: Input processing
@@ -84,21 +104,63 @@ The program prints the plan (source, category, city, theme, industries, seed org
 
 ### Part 2: Lead discovery
 
-1. **Search:** each query runs through DuckDuckGo (`ddgs`). Results are cached.
-2. **Filter (code, no tokens):** results from directories, news sites, social networks, listicles, event agencies, sponsorship agencies, and blocked domains in `data/blocked_domains.txt` are dropped. Results whose title or snippet contains words such as "foundation", "trust", "university" or "agency" are also dropped.
-3. **Classify (Gemini, batched):** up to 30 results per call. Gemini returns whether each result is a relevant company in the requested industry. Code then checks that the organization name appears in that result's title or snippet.
-4. **Organizations:** one record per root domain. The URL and domain come from the search result, never from Gemini.
-5. **Crawl:** the homepage is fetched and links are scored by keyword (team, about, leadership, contact, sponsors, CSR and similar). The best few pages are fetched, to a depth of 2.
-6. **Failure ladder:** a failed page is retried, then tried at an alternate URL (http/https, with or without www), then loaded from the Wayback Machine. If all of these fail, the organization falls back to its search snippet and is marked as not usable.
-7. **Re-plan (at most one round):** if too few organizations are usable, Gemini proposes up to 4 new search queries. Code rejects any query that is longer than 5 words, contains a URL, repeats an earlier query, or contains event words for a company run.
-8. **Stop conditions:** the run ends when it reaches `MAX_ORGS`, the call budget (`MAX_CALLS_PER_RUN`) or the re-plan limit.
+1. **Search:** queries run through DuckDuckGo (`ddgs`) with a TTL cache. Duplicate URLs are normalized and removed before Gemini classification.
+2. **Resolve seeds first:** names grounded in a brochure are searched directly; a seed is admitted only when a result matches the name and the domain resembles the brand. A seed lookup never relies on Gemini to invent a URL.
+3. **Filter and classify:** code removes blocked domains/file types/listicles; Gemini classifies batches of up to 30. Names must be grounded in the original title/snippet. If Gemini is unavailable, tightly constrained domain-matched rows can be retained as `needs_review`, never as verified relevance.
+4. **Candidate vs. usable-page counts:** every brand/domain-matched organization can be retained as a review candidate even if its site fails to load. Only organizations with usable official or archived page text count toward `MIN_ORGS` and suppress re-planning. A search snippet is labeled `snippet_only`, not treated as an official page or success.
+5. **Crawl:** attempt every candidate organization's homepage and explicitly extract visible text from semantic/conventionally named footer regions (`<footer>`, `role=contentinfo`, and footer-named ids/classes) whenever its live HTML is available; prioritize same-domain Contact/Contact Us links, then fetch a small number of high-value pages concurrently. Step 4 scans homepage and fetched-page text/HTML (including footer content) for published contact emails; Step 5 checks live official-page text/HTML (including footers) for target-city evidence. When a site has no recognizable footer markup, the full visible fetched HTML is still checked. Requests have bounded retries and a Step 2 discovery time budget. A TTL page cache avoids re-downloading successful pages on immediate reruns.
+6. **Failure ladder:** transport errors retry; HTTP 401/403/429 are respected; simple URL variants are tried where appropriate; public Wayback snapshots are labelled archival evidence. A richer archived copy may supplement a thin live page, but never replaces it as current proof.
+7. **Re-plan (at most one round by default):** when usable official/archived pages are below `MIN_ORGS`, Gemini may propose up to four new queries. Prompt and validator both require 3–5 words; repeats, URLs and banned terms are rejected.
+8. **Stop conditions:** stop on the run time budget, candidate cap, usable-page cap, call budget, or re-plan limit. The CLI reports candidates separately from organizations with usable pages.
+
+### Part 3: Decision-maker identification
+
+Step 3 receives all retained candidates, but only usable official/archived page text can form primary evidence windows. Candidates without role-bearing text remain in `lead_all.csv`; snippet fallback is separately bounded. City proof is not a precondition for looking for a person, and Step 5 remains responsible for the final live-page location gate. Step 3 builds merged windows around configured role keywords, labels each window with its source URL, caps context at 6,000 characters per organization, and batches up to `BATCH_ORGS` organizations per Gemini `smart` request.
+
+Gemini only proposes a name, role, organization ID, and source URL. Code rejects candidates unless the person name is present in the original source text (fuzzy score at least 92), a matching target role is supported within 300 characters, and the returned URL exactly matches a labelled page. Candidates are ranked by role priority, page type, and live-versus-Wayback source; the highest-ranked person is selected and the others are retained for audit. Generic entries and prompt-injected claims are not accepted without source grounding.
+
+If no grounded person is found, Step 3 may search the organization's own domain for the highest-priority role and inspect same-domain result snippets. This fallback is limited by `MAX_SNIPPET_FALLBACKS` (default 2); snippet-only candidates remain clearly marked and never become official-page evidence. Step 3 never fabricates a name or visits LinkedIn to infer employment.
+
+The offline Step 3 tests use fake model and search functions, so they make **zero API calls and zero live searches**:
+
+```powershell
+python -m tests.test_step3_people
+python -m tests.test_step3_roles
+python -m tests.test_step3_cli
+python -m tests.test_step4_contacts
+```
+
+### Part 4: Contact extraction and verification
+
+Step 4 is code-only; Gemini never generates or verifies a contact. For every candidate with a fetched official homepage, it scans the page text and HTML—including extracted footer regions—and scans any additionally fetched live official pages (with Contact Us links prioritized) for `mailto:` and plain emails, de-obfuscates common `[at]`/`[dot]` forms, and decodes Cloudflare `data-cfemail`. Every observed email is retained for review. A person-specific email can be verified when the official page publishes it, it matches the Step 3 person, passes syntax validation, and its domain has MX records; recognized public providers such as Gmail and Yahoo are allowed. If no person-specific contact passes—or Step 3 finds no person—a shared company-domain inbox such as `info@company.com` can qualify as `General Contact, Company Contact` when it is published on the live official page and passes syntax, same-domain, and MX checks. Public-provider email addresses are also allowed when published on the official page and pass syntax and MX checks; without a grounded person, personal-looking addresses are labeled `Published Contact, Company Contact`, not as a named decision-maker. No person name or designation is fabricated. If no contact passes these checks, the organization remains a review candidate rather than a verified lead.
+
+If no exact personal email qualifies, the agent may derive an address only from a dominant same-domain format observed in at least two distinct personal-looking addresses. These are labeled `Pattern-Derived`, never `Verified`. Social/profile links are not contact channels and cannot substitute for a published email; they may only be used as discovery hints. If no qualifying person-specific or company-level email is published, the candidate remains unverified. No login, retries, SMTP probing, or bot-protection bypass is used. Wayback-only contact data is not considered current verification. Each accepted email retains its evidence/supporting URLs and passed checks in the result and CLI output.
+
+Offline tests inject fake MX lookups and assert that profile-link callbacks are never called; the suite makes **no DNS, HTTP, API, or live search calls**:
+
+```powershell
+python -m tests.test_step4_contacts
+```
+
+### Part 5: Validation and export
+
+Step 5 makes **zero Gemini calls**. It validates and deduplicates accepted rows, requires the requested city (including a configured alias) to appear in extracted text or visible HTML from a live official-domain page (including footer content; never search/social snippets), and records row-level drop reasons. It writes `outputs/lead_all.csv`, `outputs/leads.csv`, `outputs/leads.db`, and `outputs/audit_log.csv` before any optional Sheets connection. `lead_all.csv` has one row per discovered organization and seven columns: the six `leads.csv` fields plus `Why Not Verified`. A verified contact whose lead fails another export check is labeled `Contact Verified; Lead Not Exported`, with the blocking reason shown in the last column. The full source/evidence details remain in SQLite `candidate_review` and the small-sample JSON; `leads.csv` and SQLite `leads` remain accepted, verified-only rows. The database also records review history and every run in `pipeline_runs`, including runs with zero accepted leads. Sponsorship evidence is recorded for review but is not a hard Step 5 export gate; location and a verified contact are.
+
+Google Sheets is optional and is attempted only when both `SHEET_ID` and `GOOGLE_CREDENTIALS` are set and the credential file exists. Without them, local exports still complete and no Google request is made. For a later Sheets test, enable the Google Sheets and Drive APIs in a no-billing Cloud project, create a service account, save its JSON key locally as `credentials.json`, share the target spreadsheet with that service-account email as Editor, and set the two variables in `.env`. Never paste or commit the JSON key. The agent does not change the sheet's sharing permissions.
+
+The offline export tests use a temporary SQLite database and a fake Sheets client; they make **no Google API or network calls**:
+
+```powershell
+python -m tests.test_step5_export
+```
 
 ## Query rules
 
 - Company runs (`Sponsor`, `Both`) use only the industries and city. Words such as "sponsor", "college", "fest", "delegation" and "student" are never added.
 - College runs (`College Delegation`) use college templates.
 - Every query is at most 5 words, because longer queries return few or no results.
-- At most 10 queries per plan.
+- At most 10 queries per plan. Digital-sector plans include related search phrases (for example, software, IT consulting, and managed IT services) to improve discovery recall without relaxing official-site verification.
+- DuckDuckGo returns up to 10 results per query by default (`SEARCH_MAX_RESULTS` can be set from 1 to 20). Search caches are refreshed when this limit changes.
 
 ## Configuration (`.env`)
 
@@ -108,11 +170,22 @@ MODEL_FAST=gemini-3.1-flash-lite,gemini-flash-lite-latest
 MODEL_SMART=gemini-3.5-flash,gemini-3-flash-preview
 RPM_LIMIT=5
 RPD_LIMIT=20
-MAX_ORGS=8
-BATCH_ORGS=3
-MAX_CALLS_PER_RUN=12
+MAX_ORGS=20
+BATCH_ORGS=5
+MAX_CALLS_PER_RUN=10
+MAX_SNIPPET_FALLBACKS=2
+MIN_ORGS=5
 REPLAN_ROUNDS=1
+MAX_CANDIDATES=40
+MAX_SEED_ORGS=10
+MAX_ENRICHMENT_SEEDS=4
+TIME_BUDGET_MIN=8
+SEARCH_MAX_RESULTS=10
+SEARCH_CACHE_TTL_HOURS=48
+PAGE_CACHE_TTL_HOURS=72
 OFFLINE=1
+SHEET_ID=
+GOOGLE_CREDENTIALS=credentials.json
 ```
 
 Each model name in `MODEL_FAST` and `MODEL_SMART` is tried in order. When one model reaches its daily limit, the next one in the chain is used.
@@ -121,9 +194,11 @@ Each model name in `MODEL_FAST` and `MODEL_SMART` is tried in order. When one mo
 
 - The free tier allows about 20 requests per model per day. Limits reset at midnight Pacific Time.
 - Limits apply per Google Cloud project, not per key.
-- Every Gemini answer and every search result is cached in `outputs/.llm_cache`. A repeated input makes no new request.
-- Usage is tracked in `outputs/.budget.json`. Check it before a live run.
+- Gemini answers and non-empty search results are cached. A repeated input reuses cached data; empty or failed searches are not cached permanently, so a later run can retry them.
+- Usage is tracked in `outputs/.budget.json`; its `date` is the Pacific calendar date used for quota rollover. A new date is written immediately on startup, even if the run only hits cache.
 - To replay a previous run without any requests, use `--offline` with the same inputs.
+
+The conservative profile is `MAX_CALLS_PER_RUN=10`, `MAX_ORGS=20`, `MAX_CANDIDATES=40`, `BATCH_ORGS=5`, `MAX_SNIPPET_FALLBACKS=2`, `MIN_ORGS=5`, and at most one re-plan round. The code hard-caps each run at 10 accounted Gemini responses even if an older `.env` asks for more. Re-planning consumes a call only when usable official/archived page yield is below target. Usage already spent today still counts; search/page caches reduce repeat work. If you already have `.env`, update the relevant settings manually; `.env` is local and git-ignored.
 
 ## Tests
 
@@ -134,6 +209,17 @@ python -m tests.test_queries
 python -m tests.test_replan
 python -m tests.test_discovery
 python -m tests.test_crawl
+python -m tests.test_step3_people
+python -m tests.test_step3_roles
+python -m tests.test_step3_cli
+python -m tests.test_step4_contacts
+python -m tests.test_step5_export
+python -m tests.test_small_sample
+python -m tests.test_search_cache
+python -m tests.test_fetch
+python -m tests.test_discovery_seeds
+python -m tests.test_location
+python -m tests.test_budget
 ```
 
 ## Project layout
@@ -147,28 +233,33 @@ agent/
   schemas.py                 data models
   step1_input.py             prompt and PDF to SearchPlan, query builder
   search.py                  web search with caching
-  filters.py                 drops directories, news, agencies, blocked domains
+  filters.py                 domain, file-type and listicle pre-filters
+  location.py                shared city-alias matching
   classify.py                Gemini batch classification with grounding check
   orgs.py                    organization records, root-domain dedupe
   crawl.py                   homepage link scoring
   fetch.py                   page fetch with failure ladder
   replan.py                  re-plan query proposals and validation
   discovery.py               discovery loop
+  step3_people.py            decision-maker extraction, grounding and ranking
+  step4_contacts.py          code-only contact extraction and verification
+  step5_export.py            validation, deduplication and local/optional Sheets export
 scripts/
   check_models.py            checks which models your key can use
   make_sample_brochure.py    creates data/sample_brochure.pdf
 data/
   sample_brochure.pdf        test brochure
-  blocked_domains.txt        domains excluded from search results
+  role_keywords.json         editable decision-maker role priorities
+  generic_inboxes.txt        local-parts rejected as shared inboxes
 tests/                       offline tests
-outputs/                     cache, usage state and trace log (git-ignored)
+outputs/                     caches, usage, trace, lead_all.csv, leads.csv, audit_log.csv and leads.db (git-ignored)
 ```
 
 ## Known limitations
 
 - **Scanned PDFs** (image-only) are not supported yet. The program logs a warning and uses only regex seeds.
 - **Some company sites block automated access** (HTTP 403) or are slow. These fall back to the Wayback Machine or search snippets. We don't bypass bot protection.
-- **Snippet-only organizations** are not counted as usable for Part 3.
+- **Snippet-only person candidates** are allowed only through Step 3's capped same-domain fallback, are scored below page-grounded candidates, and retain the snippet URL as their evidence source.
 - **LinkedIn, Instagram and Facebook** are not scraped. Their terms and login walls make them unreliable. Social links found on official sites are recorded instead.
 - **DuckDuckGo** returns few results for long or unusual queries, which is why queries are kept short.
 - **The prompt path** returns no seed organizations. Seeds come only from a brochure.

@@ -113,6 +113,9 @@ def test_local_csv_sqlite_audit_and_deduplication_are_idempotent():
         assert first.rows_added == 1
         assert first.total_rows == 1
         assert first.duplicates_skipped == 0
+        assert first.review_candidates == 1
+        assert second.review_candidates == 1
+        assert first.run_id > 0 and second.run_id > first.run_id
         assert second.rows_added == 0
         assert second.total_rows == 1
         assert second.duplicates_skipped == 1
@@ -140,6 +143,8 @@ def test_local_csv_sqlite_audit_and_deduplication_are_idempotent():
         with sqlite3.connect(first.database_path) as connection:
             assert connection.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 1
             assert connection.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 1
+            assert connection.execute("SELECT COUNT(*) FROM candidate_review").fetchone()[0] == 1
+            assert connection.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0] == 2
 
 
 def test_unconfirmed_location_drops_row_and_does_not_call_sheets():
@@ -158,7 +163,38 @@ def test_unconfirmed_location_drops_row_and_does_not_call_sheets():
         assert result.rows_added == 0
         assert len(result.dropped) == 1
         assert "not confirmed" in result.dropped[0]["reason"]
+        assert result.review_candidates == 1
+        with sqlite3.connect(result.database_path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 0
+            assert connection.execute("SELECT COUNT(*) FROM candidate_review").fetchone()[0] == 1
+            assert connection.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0] == 1
+            reasons, contacts = connection.execute(
+                "SELECT review_reasons_json, step4_contacts_json FROM candidate_review"
+            ).fetchone()
+            assert "Target location is not confirmed" in reasons
+            assert "asha.banerjee@acmesolar.in" in contacts
         assert calls == []
+
+
+def test_empty_run_still_records_a_run_in_sqlite():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        result = export_verified_leads(
+            Step4Outcome(),
+            [],
+            output_dir=Path(temp_dir),
+            sheet_id="",
+            credentials_path="",
+            run_context={"category": "Sponsor", "target_location": "Kolkata"},
+        )
+        assert result.review_candidates == 0
+        assert result.run_id == 1
+        with sqlite3.connect(result.database_path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 0
+            assert connection.execute("SELECT COUNT(*) FROM candidate_review").fetchone()[0] == 0
+            run = connection.execute(
+                "SELECT category, target_location, discovered_candidates FROM pipeline_runs"
+            ).fetchone()
+            assert run == ("Sponsor", "Kolkata", 0)
 
 
 def test_optional_google_sheet_sync_uses_fake_client_and_exact_headers():
@@ -195,5 +231,6 @@ def test_optional_google_sheet_sync_uses_fake_client_and_exact_headers():
 if __name__ == "__main__":
     test_local_csv_sqlite_audit_and_deduplication_are_idempotent()
     test_unconfirmed_location_drops_row_and_does_not_call_sheets()
+    test_empty_run_still_records_a_run_in_sqlite()
     test_optional_google_sheet_sync_uses_fake_client_and_exact_headers()
     print("Step 5 offline tests passed; no Google API or network calls were made.")

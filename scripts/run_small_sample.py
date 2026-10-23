@@ -394,6 +394,7 @@ def main() -> int:
             output_dir=export_dir,
             sheet_id="",
             credentials_path="",
+            run_context={"category": plan.category, "target_location": city},
         )
         full_pipeline = {
             "decision_makers": [
@@ -423,6 +424,8 @@ def main() -> int:
                 "csv_path": export_result.csv_path,
                 "audit_csv_path": export_result.audit_csv_path,
                 "database_path": export_result.database_path,
+                "review_candidates": export_result.review_candidates,
+                "run_id": export_result.run_id,
                 "sheets_status": export_result.sheets_status,
                 "sheets_message": export_result.sheets_message,
             },

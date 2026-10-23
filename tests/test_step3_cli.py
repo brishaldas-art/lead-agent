@@ -74,7 +74,11 @@ def test_main_runs_step3_and_prints_grounded_person():
     discovery.assert_called_once_with(plan)
     step3.assert_called_once_with(records)
     step4.assert_called_once_with(outcome, records)
-    step5.assert_called_once_with(step4.return_value, records)
+    step5.assert_called_once_with(
+        step4.return_value,
+        records,
+        run_context={"category": "Sponsor", "target_location": "Kolkata"},
+    )
 
 
 if __name__ == "__main__":

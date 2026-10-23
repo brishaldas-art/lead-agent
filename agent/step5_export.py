@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -111,6 +112,8 @@ class Step5Outcome:
     csv_path: str = ""
     audit_csv_path: str = ""
     database_path: str = ""
+    review_candidates: int = 0
+    run_id: int = 0
     sheets_status: str = "not_configured"
     sheets_message: str = ""
     sheet_url: str = ""
@@ -323,6 +326,39 @@ def _create_tables(connection: sqlite3.Connection) -> None:
                 REFERENCES leads(root_domain, normalized_contact_key)
         )"""
     )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS candidate_review (
+            root_domain TEXT PRIMARY KEY,
+            organization_name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            target_location TEXT NOT NULL,
+            homepage TEXT NOT NULL,
+            verification_status TEXT NOT NULL,
+            official_location_evidence_json TEXT NOT NULL,
+            direct_sponsorship_evidence_json TEXT NOT NULL,
+            related_csr_evidence_json TEXT NOT NULL,
+            step4_contacts_json TEXT NOT NULL,
+            discovery_only_evidence_json TEXT NOT NULL,
+            pages_json TEXT NOT NULL,
+            review_reasons_json TEXT NOT NULL,
+            first_seen_at_utc TEXT NOT NULL,
+            last_seen_at_utc TEXT NOT NULL
+        )"""
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS pipeline_runs (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at_utc TEXT NOT NULL,
+            category TEXT NOT NULL,
+            target_location TEXT NOT NULL,
+            discovered_candidates INTEGER NOT NULL,
+            verified_contacts INTEGER NOT NULL,
+            local_leads_added INTEGER NOT NULL,
+            total_local_leads INTEGER NOT NULL,
+            duplicates_skipped INTEGER NOT NULL,
+            invalid_rows_dropped INTEGER NOT NULL
+        )"""
+    )
 
 
 def _read_stored(connection: sqlite3.Connection) -> list[_StoredLead]:
@@ -416,6 +452,173 @@ def _persist_local(
     _write_csv(output_dir / "leads.csv", stored)
     _write_audit_csv(output_dir / "audit_log.csv", stored)
     return stored, added, duplicates
+
+
+def _persist_candidate_review(
+    database_path: Path,
+    discovery_records: list[dict[str, Any]],
+    step4_result: Any,
+    *,
+    run_context: dict[str, Any],
+    export_drops: list[dict[str, str]],
+    leads_added: int,
+    total_leads: int,
+    duplicates_skipped: int,
+    invalid_rows_dropped: int,
+) -> tuple[int, int]:
+    """Keep discovered candidates and a run ledger separate from verified leads."""
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    verified_contacts = list(getattr(step4_result, "verified", step4_result) or [])
+    contact_domains = {
+        _root_domain(str(_value(_value(item, "org", {}), "domain", "")))
+        for item in verified_contacts
+    }
+    contacts_by_domain: dict[str, list[dict[str, Any]]] = {}
+    for item in verified_contacts:
+        org = _value(item, "org", {})
+        domain = _root_domain(str(_value(org, "domain", "")))
+        contact = _value(item, "contact", {})
+        person = _value(item, "person", {})
+        if domain:
+            contacts_by_domain.setdefault(domain, []).append({
+                "person_name": _clean_text(_value(person, "full_name", "")),
+                "person_role": _clean_text(_value(person, "role", "")),
+                "channel": _clean_text(_value(contact, "channel", "")),
+                "channel_type": _clean_text(_value(contact, "channel_type", "")),
+                "status": _clean_text(_value(contact, "status", "")),
+                "evidence_url": _clean_text(_value(contact, "evidence_url", "")),
+                "supporting_urls": [str(url) for url in (_value(contact, "supporting_urls", []) or [])],
+                "checks_passed": list(_value(contact, "checks_passed", []) or []),
+            })
+    contact_drop_reasons: dict[str, list[str]] = {}
+    for item in getattr(step4_result, "dropped", []) or []:
+        domain = _root_domain(str(item.get("domain", "")))
+        if domain:
+            contact_drop_reasons.setdefault(domain, []).append(str(item.get("reason", "")))
+    category = _clean_text(run_context.get("category", ""))
+    run_location = _clean_text(run_context.get("target_location", ""))
+    seen_domains: set[str] = set()
+
+    with sqlite3.connect(database_path) as connection:
+        _create_tables(connection)
+        for record in discovery_records:
+            org = record.get("org")
+            if org is None:
+                continue
+            org_name = _clean_text(_value(org, "org_name", "unknown organization"))
+            domain = _root_domain(str(_value(org, "domain", ""))) or f"unknown:{org_name.casefold()}"
+            seen_domains.add(domain)
+            verification = record.get("verification") or {}
+            target_location = _clean_text(
+                _value(verification, "target_city", "")
+                or run_location
+                or _value(org, "city", "")
+            )
+            official_location_urls: list[str] = []
+            if target_location:
+                location_pattern = re.compile(rf"(?<!\w){re.escape(target_location)}(?!\w)", re.I)
+                for page in record.get("pages", []) or []:
+                    if _official_live_page(page, domain) and location_pattern.search(_clean_text(page.get("text", ""))):
+                        page_url = _clean_text(page.get("url", ""))
+                        if page_url and page_url not in official_location_urls:
+                            official_location_urls.append(page_url)
+
+            direct_urls = list(_value(verification, "direct_sponsorship_evidence_urls", []) or [])
+            related_urls = list(_value(verification, "related_csr_community_evidence_urls", []) or [])
+            reasons: list[str] = []
+            if not official_location_urls:
+                reasons.append("Target location is not confirmed in live official-page text.")
+            if not direct_urls:
+                reasons.append(
+                    "Related CSR/community evidence only; direct sponsorship is not confirmed."
+                    if related_urls
+                    else "No direct sponsorship evidence was found in collected sources."
+                )
+            if domain not in contact_domains:
+                reasons.extend(reason for reason in contact_drop_reasons.get(domain, []) if reason)
+                if not contact_drop_reasons.get(domain):
+                    reasons.append("No verified contact was available for export in this run.")
+            for dropped in export_drops:
+                if _clean_text(dropped.get("org_name", "")).casefold() == org_name.casefold():
+                    reasons.append(str(dropped.get("reason", "")))
+
+            pages_summary = [
+                {
+                    "url": _clean_text(page.get("url", "")),
+                    "status": _clean_text(page.get("status", "")),
+                    "http_status": page.get("http_status"),
+                    "page_type": _clean_text(page.get("page_type", "")),
+                    "text_excerpt": _clean_text(page.get("text", ""))[:800],
+                }
+                for page in (record.get("pages", []) or [])
+            ]
+            discovery_only = [
+                {
+                    "evidence_type": _clean_text(item.get("evidence_type", "")),
+                    "source": _clean_text(item.get("source", "")),
+                    "title": _clean_text(item.get("title", "")),
+                    "snippet": _clean_text(item.get("snippet", ""))[:500],
+                }
+                for item in (record.get("discovery_evidence", []) or [])
+            ]
+            first_seen = connection.execute(
+                "SELECT first_seen_at_utc FROM candidate_review WHERE root_domain = ?",
+                (domain,),
+            ).fetchone()
+            connection.execute(
+                """INSERT INTO candidate_review (
+                    root_domain, organization_name, category, target_location, homepage,
+                    verification_status, official_location_evidence_json,
+                    direct_sponsorship_evidence_json, related_csr_evidence_json,
+                    step4_contacts_json, discovery_only_evidence_json, pages_json,
+                    review_reasons_json, first_seen_at_utc, last_seen_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(root_domain) DO UPDATE SET
+                    organization_name=excluded.organization_name,
+                    category=excluded.category,
+                    target_location=excluded.target_location,
+                    homepage=excluded.homepage,
+                    verification_status=excluded.verification_status,
+                    official_location_evidence_json=excluded.official_location_evidence_json,
+                    direct_sponsorship_evidence_json=excluded.direct_sponsorship_evidence_json,
+                    related_csr_evidence_json=excluded.related_csr_evidence_json,
+                    step4_contacts_json=excluded.step4_contacts_json,
+                    discovery_only_evidence_json=excluded.discovery_only_evidence_json,
+                    pages_json=excluded.pages_json,
+                    review_reasons_json=excluded.review_reasons_json,
+                    last_seen_at_utc=excluded.last_seen_at_utc""",
+                (
+                    domain,
+                    org_name,
+                    _clean_text(_value(org, "category", "")),
+                    target_location,
+                    _clean_text(_value(org, "homepage", "")),
+                    _clean_text(_value(verification, "status", "not_checked")) or "not_checked",
+                    json.dumps(official_location_urls, ensure_ascii=False),
+                    json.dumps(direct_urls, ensure_ascii=False),
+                    json.dumps(related_urls, ensure_ascii=False),
+                    json.dumps(contacts_by_domain.get(domain, []), ensure_ascii=False),
+                    json.dumps(discovery_only, ensure_ascii=False),
+                    json.dumps(pages_summary, ensure_ascii=False),
+                    json.dumps(list(dict.fromkeys(reason for reason in reasons if reason)), ensure_ascii=False),
+                    first_seen[0] if first_seen else now,
+                    now,
+                ),
+            )
+
+        cursor = connection.execute(
+            """INSERT INTO pipeline_runs (
+                run_at_utc, category, target_location, discovered_candidates,
+                verified_contacts, local_leads_added, total_local_leads,
+                duplicates_skipped, invalid_rows_dropped
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                now, category, run_location, len(seen_domains), len(verified_contacts),
+                leads_added, total_leads, duplicates_skipped, invalid_rows_dropped,
+            ),
+        )
+        run_id = int(cursor.lastrowid or 0)
+    return len(seen_domains), run_id
 
 
 def _ensure_worksheet(spreadsheet: Any, title: str, headers: tuple[str, ...]) -> tuple[Any, list[list[str]]]:
@@ -529,6 +732,7 @@ def export_verified_leads(
     sheet_id: str | None = None,
     credentials_path: str | Path | None = None,
     sheets_client_factory: Callable[[str], Any] | None = None,
+    run_context: dict[str, Any] | None = None,
 ) -> Step5Outcome:
     """Export verified contacts. Local files are always persisted before Sheets.
 
@@ -567,6 +771,17 @@ def export_verified_leads(
     outcome.csv_path = str(output_path / "leads.csv")
     outcome.audit_csv_path = str(output_path / "audit_log.csv")
     outcome.database_path = str(output_path / "leads.db")
+    outcome.review_candidates, outcome.run_id = _persist_candidate_review(
+        Path(outcome.database_path),
+        discovery_records,
+        step4_result,
+        run_context=run_context or {},
+        export_drops=outcome.dropped,
+        leads_added=outcome.rows_added,
+        total_leads=outcome.total_rows,
+        duplicates_skipped=outcome.duplicates_skipped,
+        invalid_rows_dropped=len(outcome.dropped),
+    )
 
     configured_sheet_id = os.getenv("SHEET_ID", "") if sheet_id is None else str(sheet_id)
     configured_credentials = os.getenv("GOOGLE_CREDENTIALS", "") if credentials_path is None else str(credentials_path)

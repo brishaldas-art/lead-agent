@@ -179,7 +179,11 @@ def main() -> int:
     from agent.step5_export import export_verified_leads
 
     print("\nRunning Step 5: validation and export...")
-    export_result = export_verified_leads(contact_result, records)
+    export_result = export_verified_leads(
+        contact_result,
+        records,
+        run_context={"category": plan.category, "target_location": plan.city or ""},
+    )
     print(
         f"New local rows: {export_result.rows_added}; "
         f"total local leads: {export_result.total_rows}; "
@@ -189,6 +193,10 @@ def main() -> int:
     print(f"CSV: {export_result.csv_path}")
     print(f"Audit CSV: {export_result.audit_csv_path}")
     print(f"SQLite: {export_result.database_path}")
+    print(
+        f"Candidate review records in SQLite: {export_result.review_candidates}; "
+        f"pipeline run ID: {export_result.run_id}"
+    )
     for item in export_result.dropped:
         print(f"- {item['org_name']} | {item['reason']}")
     print(f"Google Sheets: {export_result.sheets_message}")

@@ -9,6 +9,7 @@ import main as app
 from agent.schemas import OrgCandidate
 from agent.step3_people import OrgWithPerson, Person, Step3Outcome
 from agent.step4_contacts import Step4Outcome
+from agent.step5_export import Step5Outcome
 from agent.schemas import SearchPlan
 
 
@@ -47,6 +48,7 @@ def test_main_runs_step3_and_prints_grounded_person():
          patch.object(app, "run_discovery", return_value=records) as discovery, \
          patch("agent.step3_people.identify_people", return_value=outcome) as step3, \
          patch("agent.step4_contacts.verify_contacts", return_value=Step4Outcome()) as step4, \
+         patch("agent.step5_export.export_verified_leads", return_value=Step5Outcome()) as step5, \
          redirect_stdout(output):
         assert app.main() == 0
 
@@ -55,9 +57,11 @@ def test_main_runs_step3_and_prints_grounded_person():
     assert "Asha Banerjee | Head of CSR" in rendered
     assert "https://acmesolar.in/team" in rendered
     assert "Running Step 4: code-only contact verification" in rendered
+    assert "Running Step 5: validation and export" in rendered
     discovery.assert_called_once_with(plan)
     step3.assert_called_once_with(records)
     step4.assert_called_once_with(outcome, records)
+    step5.assert_called_once_with(step4.return_value, records)
 
 
 if __name__ == "__main__":

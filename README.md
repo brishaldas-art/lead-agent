@@ -1,6 +1,6 @@
 # Lead Discovery Agent
 
-An agent that takes a search prompt, an event brochure PDF, or both, and finds sponsors and college delegations. It reads public web pages, identifies organizations, and grounds a decision-maker for each usable lead. Contact verification is implemented; Google Sheets export remains planned. The final goal is a sheet of verified leads.
+An agent that takes a search prompt, an event brochure PDF, or both, and finds sponsors and college delegations. It reads public web pages, identifies organizations, and grounds a decision-maker for each usable lead. Contact verification and local CSV/SQLite export are implemented; Google Sheets export is optional when local service-account credentials are configured. The final goal is a sheet of verified leads.
 
 The agent never invents data. Gemini is used only for language tasks. URLs, domains, emails and grounding checks are done in code.
 
@@ -12,7 +12,7 @@ The agent never invents data. Gemini is used only for language tasks. URLs, doma
 | 2 | Lead discovery: search, filter, classify, crawl, re-plan | Implemented. Offline tests pass. Live run verification in progress |
 | 3 | Decision-maker identification: role-based extraction, grounding, ranking and snippet fallback | Implemented. Offline tests pass |
 | 4 | Contact extraction and verification (code only) | Implemented. Offline tests pass |
-| 5 | Export to Google Sheets and CSV | Not started |
+| 5 | Validation, deduplication and export to CSV/SQLite with optional Google Sheets | Implemented. Offline tests pass; Sheets requires local credentials |
 
 ## Requirements
 
@@ -134,6 +134,18 @@ Offline tests inject fake MX and profile responses and make **no DNS, HTTP, API,
 python -m tests.test_step4_contacts
 ```
 
+### Part 5: Validation and export
+
+Step 5 consumes only Step 4 verified contacts and makes **zero Gemini calls**. It validates the exact six-column row, requires the organization city to appear in a live official-domain page, deduplicates on root domain/contact (with fuzzy organization-name matching), and records row-level drop reasons. It always writes `outputs/leads.csv`, `outputs/leads.db`, and `outputs/audit_log.csv` before any optional Sheets connection. The main CSV/sheet has exactly six columns; source URLs and checks stay in the audit outputs.
+
+Google Sheets is optional and is attempted only when both `SHEET_ID` and `GOOGLE_CREDENTIALS` are set and the credential file exists. Without them, local exports still complete and no Google request is made. For a later Sheets test, enable the Google Sheets and Drive APIs in a no-billing Cloud project, create a service account, save its JSON key locally as `credentials.json`, share the target spreadsheet with that service-account email as Editor, and set the two variables in `.env`. Never paste or commit the JSON key. The agent does not change the sheet's sharing permissions.
+
+The offline export tests use a temporary SQLite database and a fake Sheets client; they make **no Google API or network calls**:
+
+```powershell
+python -m tests.test_step5_export
+```
+
 ## Query rules
 
 - Company runs (`Sponsor`, `Both`) use only the industries and city. Words such as "sponsor", "college", "fest", "delegation" and "student" are never added.
@@ -155,6 +167,8 @@ MAX_CALLS_PER_RUN=12
 MAX_SNIPPET_FALLBACKS=5
 REPLAN_ROUNDS=1
 OFFLINE=1
+SHEET_ID=
+GOOGLE_CREDENTIALS=credentials.json
 ```
 
 Each model name in `MODEL_FAST` and `MODEL_SMART` is tried in order. When one model reaches its daily limit, the next one in the chain is used.
@@ -180,6 +194,8 @@ python -m tests.test_step3_people
 python -m tests.test_step3_roles
 python -m tests.test_step3_cli
 python -m tests.test_step4_contacts
+python -m tests.test_step5_export
+python -m tests.test_budget
 ```
 
 ## Project layout
@@ -202,6 +218,7 @@ agent/
   discovery.py               discovery loop
   step3_people.py            decision-maker extraction, grounding and ranking
   step4_contacts.py          code-only contact extraction and verification
+  step5_export.py            validation, deduplication and local/optional Sheets export
 scripts/
   check_models.py            checks which models your key can use
   make_sample_brochure.py    creates data/sample_brochure.pdf
@@ -211,7 +228,7 @@ data/
   role_keywords.json         editable decision-maker role priorities
   generic_inboxes.txt        local-parts rejected as shared inboxes
 tests/                       offline tests
-outputs/                     cache, usage state and trace log (git-ignored)
+outputs/                     cache, usage, trace, leads.csv, audit_log.csv and leads.db (git-ignored)
 ```
 
 ## Known limitations

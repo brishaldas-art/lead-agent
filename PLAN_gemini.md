@@ -107,7 +107,7 @@ All Gemini traffic goes through **one gateway module**. No other file imports th
 | Fuzzy match | `rapidfuzz` | Yes | Dedupe, grounding, name match |
 | Cache | `diskcache` | Yes | Caches searches, pages **and every Gemini call** |
 | Sheets export | `gspread` + `google-auth` | Yes | Service account, no OAuth browser step |
-| Tabular | `pandas` | Yes | CSV and dedupe |
+| Tabular export | Python `csv` + `sqlite3` | Yes | No extra dataframe dependency |
 | CLI / UI | `typer`, optional `streamlit` | Yes | One-command run |
 | Logging | `rich` | Yes | Live agent trace and a token-budget panel in the demo |
 | Config | `python-dotenv` | Yes | Loads `.env` |
@@ -141,6 +141,7 @@ lead-agent/
 │   └── sample_brochure.pdf
 └── outputs/
     ├── leads.csv
+    ├── audit_log.csv
     ├── leads.db
     ├── agent_trace.log
     ├── .llm_cache/           # Gemini response cache (git-ignored, but keep a warmed copy for the demo)
@@ -656,16 +657,18 @@ flowchart TD
     I -->|No| K[Retry x3 then keep CSV and print the error + import instructions]
 ```
 
+**Implementation note:** Step 5 always writes the six-column `outputs/leads.csv`, a deduplicated `outputs/leads.db`, and an `outputs/audit_log.csv` sidecar before attempting Sheets. Sheets export is opt-in via both `SHEET_ID` and `GOOGLE_CREDENTIALS`; missing credentials never block local output. The main worksheet remains exactly six columns, while source URLs and checks are stored in the audit worksheet/sidecar. The current implementation does not change public-sharing permissions. Location is emitted only when the candidate city is confirmed in live official-domain page text.
+
 ### 5.2 Why These Tools
 
 | Tool | Role | Why |
 |---|---|---|
 | `pydantic` | Enforce the exact six-field schema | Invalid rows never reach the sheet |
 | `gspread` + `google-auth` | Push to Google Sheets | Free; service account needs **no OAuth browser flow**, so it is hands-free |
-| `pandas` | Dedupe and CSV | One-liners |
-| `sqlite3` (stdlib) | Local DB copy | Satisfies "Google Sheet **or database**" as a fallback |
-| `tenacity` | Retry sheet writes | Sheets API sometimes returns 429/5xx |
-| `rich` | Final summary table | Nice demo output |
+| `csv` (stdlib) | Six-column leads CSV and audit sidecar | No extra dataframe dependency |
+| `sqlite3` (stdlib) | Durable local leads and audit database | Satisfies "Google Sheet **or database**" as a fallback |
+| Bounded write reconciliation | Retry transient Sheets 429/5xx without duplicate appends | Local files remain intact on failure |
+| Standard CLI output | Export counts, file paths, drop reasons, and Sheets status | Works without additional UI dependencies |
 
 ### 5.3 Final Sheet Schema (exactly six columns, in this order)
 
@@ -678,7 +681,7 @@ flowchart TD
 | 5 | **Contact Channel** | `contact.channel` | Real email or real profile URL |
 | 6 | **Verification Status** | `contact.status` | Only `Verified` or `Pattern-Derived` |
 
-> **No extra columns on the main sheet.** Evidence URLs and check details go to a **second worksheet** `audit_log` and to `outputs/agent_trace.log`.
+> **No extra columns on the main sheet.** Evidence URLs and check details go to a **second worksheet** `audit_log`, `outputs/audit_log.csv`, and the local SQLite audit table.
 
 ```python
 class SheetRow(BaseModel):
@@ -695,7 +698,7 @@ class SheetRow(BaseModel):
 1. Convert each `VerifiedLead` to `SheetRow`. **Invalid rows are dropped and logged**, never patched with guesses.
 2. **Location rule:** city from the org's own page (contact/footer address); fall back to the search city only if the org's pages confirm it; otherwise drop the row.
 3. **Dedupe:** key = `(root_domain, normalized contact_channel)`; fuzzy-match org names ≥ 92.
-4. Write `outputs/leads.csv` and `outputs/leads.db` **before** touching the network.
+4. Write `outputs/leads.csv`, `outputs/audit_log.csv`, and `outputs/leads.db` **before** touching the network.
 5. **Sheets push:** `gspread.service_account(filename=...)`, open by `SHEET_ID`, write header, `append_rows(values)` in one batch.
 6. Set the sheet to *Anyone with the link: Viewer* once, manually.
 
@@ -714,7 +717,7 @@ class SheetRow(BaseModel):
 
 | Issue | Fix |
 |---|---|
-| Sheets API quota / 429 | One batch `append_rows` + `tenacity` retry |
+| Sheets API quota / 429 or transient 5xx | Bounded, reread-before-retry append reconciliation (up to 3 attempts) |
 | Credentials missing on the judges' machine | Pipeline still writes CSV/SQLite and prints a clear setup message |
 | Duplicates across runs | Read existing sheet rows first; skip keys already present |
 | Header mismatch | Always write/validate the header row first |
@@ -752,7 +755,7 @@ class SheetRow(BaseModel):
 ```bash
 pip install google-genai pydantic pymupdf ddgs httpx tenacity trafilatura \
             beautifulsoup4 lxml tldextract email-validator dnspython \
-            rapidfuzz diskcache gspread google-auth pandas typer rich python-dotenv
+            rapidfuzz diskcache gspread google-auth typer rich python-dotenv
 ```
 
 ### 6.3 Choosing Models (never hard-code names)
@@ -1248,7 +1251,6 @@ rapidfuzz
 diskcache
 gspread
 google-auth
-pandas
 typer
 rich
 python-dotenv

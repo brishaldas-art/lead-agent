@@ -13,6 +13,19 @@ from agent.step5_export import Step5Outcome
 from agent.schemas import SearchPlan
 
 
+def test_live_city_evidence_prefilter_matches_official_page_only():
+    live_page = {
+        "pages": [{"url": "https://example.org/contact/", "status": "ok"}],
+        "verification": {"location_evidence_urls": ["https://example.org/contact"]},
+    }
+    snippet_only = {
+        "pages": [{"url": "https://example.org/", "status": "ok"}],
+        "verification": {"location_evidence_urls": ["https://example.org/search-result"]},
+    }
+    assert app._has_live_city_evidence(live_page)
+    assert not app._has_live_city_evidence(snippet_only)
+
+
 def test_main_runs_step3_and_prints_grounded_person():
     plan = SearchPlan(
         source="prompt",
@@ -65,5 +78,6 @@ def test_main_runs_step3_and_prints_grounded_person():
 
 
 if __name__ == "__main__":
+    test_live_city_evidence_prefilter_matches_official_page_only()
     test_main_runs_step3_and_prints_grounded_person()
     print("Step 3 CLI integration test passed; no API or live search calls were made.")

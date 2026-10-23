@@ -51,6 +51,7 @@ def test_classifier_sees_source_host_and_sponsor_exclusion_rules():
     prompt = ask.call_args.args[1]
     assert "source: wbreda.org" in prompt
     assert "government departments/agencies" in prompt
+    assert "NGOs, charities, nonprofits" in prompt
     assert "news publishers" in prompt
 
 

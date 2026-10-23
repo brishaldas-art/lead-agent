@@ -31,12 +31,8 @@ NAME_PAT = re.compile(r"^[A-Z].{2,59}$")
 _INDUSTRY_TEMPLATES = [
     "{ind} companies in {place}",
     "{ind} startups {place}",
-]
-_PLACE_TEMPLATES = [
-    "{place} technology companies",
-    "{place} IT services companies",
-    "{place} company CSR initiatives",
-    "{place} tech company careers",
+    "{place} {ind} manufacturers",
+    "{place} {ind} CSR",
 ]
 
 # College runs (College Delegation only). College wording is expected here.
@@ -201,11 +197,9 @@ def build_queries(
     for t in _INDUSTRY_TEMPLATES:
         for ind in inds[:2]:
             queries.append(t.format(ind=ind, place=place))
-    for t in _PLACE_TEMPLATES:
-        queries.append(t.format(place=place))
     if theme:
         short_theme = " ".join(theme.split()[:2])  # keep long theme phrases from breaking the limit
-        queries.append(f"{short_theme} technology companies {place}")
+        queries.append(f"{short_theme} {inds[0]} {place}")
 
     cleaned = _clean_unique(queries)
     kept = [q for q in cleaned if _fits(q, banned=_COMPANY_BANNED)]

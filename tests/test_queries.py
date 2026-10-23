@@ -10,4 +10,10 @@ for q in qs:
 assert any("Bengaluru" in q for q in qs)
 assert any("Future Circuits" in q for q in qs)
 
+renewable_queries = build_queries("Sponsor", "Kolkata", ["renewable energy"], None)
+assert renewable_queries
+assert all("renewable energy" in q.casefold() for q in renewable_queries), renewable_queries
+assert all("Kolkata" in q for q in renewable_queries), renewable_queries
+assert not any("IT services" in q or "tech company careers" in q for q in renewable_queries)
+
 print("query tests passed")

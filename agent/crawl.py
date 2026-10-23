@@ -12,10 +12,12 @@ _logger = logging.getLogger(__name__)
 
 # Scoring rules: each tuple contains keywords and an associated score.
 SCORE_RULES: List[Tuple[Tuple[str, ...], int]] = [
+    # Contact pages are especially valuable for official email and address
+    # evidence; rank them above team/about/CSR pages when the page cap is tight.
+    (("contact", "contact-us", "contactus", "reach-us", "get-in-touch"), 7),
     (("team", "leadership", "management", "people", "board", "council", "office-bearers"), 5),
-    (("about", "who-we-are", "committee", "society", "students"), 3),
-    (("contact", "reach-us"), 3),
     (("sponsor", "partners", "csr", "esg", "sustainability", "governance"), 4),
+    (("about", "who-we-are", "committee", "society", "students"), 3),
     (("press", "media"), 2),
 ]
 

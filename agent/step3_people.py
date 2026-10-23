@@ -31,7 +31,7 @@ ROLE_KEYWORDS_PATH = ROOT / "data" / "role_keywords.json"
 WINDOW_RADIUS = 600
 MAX_CONTEXT_CHARS = 6000
 MAX_NAME_ROLE_DISTANCE = 300
-MAX_SNIPPET_FALLBACKS = 5
+MAX_SNIPPET_FALLBACKS = 2
 GENERIC_NAMES = {
     "team", "admin", "administrator", "management", "info desk", "information desk",
     "contact us", "contact", "office", "help desk", "support", "webmaster",
@@ -483,7 +483,7 @@ def identify_people(
         from agent.gemini_client import ask as ask_fn
     if search_fn is None:
         from agent.search import run_query as search_fn
-    batch_size = max(1, int(batch_orgs if batch_orgs is not None else os.getenv("BATCH_ORGS", "3")))
+    batch_size = max(1, int(batch_orgs if batch_orgs is not None else os.getenv("BATCH_ORGS", "5")))
     fallback_cap = max(
         0,
         int(max_snippet_fallbacks if max_snippet_fallbacks is not None else os.getenv("MAX_SNIPPET_FALLBACKS", str(MAX_SNIPPET_FALLBACKS))),

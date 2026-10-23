@@ -31,8 +31,8 @@ from agent.evidence import (
 logger = logging.getLogger("agent.discovery")
 
 MIN_ORGS: int = int(os.getenv("MIN_ORGS", "15"))
-MAX_ROUNDS: int = int(os.getenv("REPLAN_ROUNDS", "2"))
-MAX_ORGS: int = int(os.getenv("MAX_ORGS", "25"))
+MAX_ROUNDS: int = int(os.getenv("REPLAN_ROUNDS", "0"))
+MAX_ORGS: int = int(os.getenv("MAX_ORGS", "20"))
 MAX_PAGES_PER_ORG: int = int(os.getenv("MAX_PAGES_PER_ORG", "3"))
 SEARCH_DELAY_SECONDS: float = 1.5
 TRACE_PATH: Path = Path("outputs/agent_trace.log")

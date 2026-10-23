@@ -65,6 +65,7 @@ def test_main_runs_step3_and_prints_grounded_person():
         step4.return_value,
         records,
         run_context={"category": "Sponsor", "target_location": "Kolkata"},
+        people_result=outcome,
     )
 
 

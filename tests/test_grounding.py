@@ -1,5 +1,7 @@
 """Regression checks for grounded locations and search-ad redirect filtering."""
 
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -79,6 +81,23 @@ def test_city_is_only_kept_when_present_in_result_evidence():
     assert verified[0]["city"] == "Kolkata"
 
 
+def test_classifier_quota_fallback_is_review_only():
+    result = {
+        "title": "Acme Solar - Official Site",
+        "url": "https://acmesolar.in/",
+        "snippet": "Solar energy services in Kolkata.",
+    }
+    with patch("agent.classify.ask", return_value=None):
+        candidates = classify_results([result], "Sponsor", "Kolkata")
+    assert len(candidates) == 1
+    assert candidates[0]["relevance_verified"] is False
+    assert candidates[0]["classification_status"] == "llm_unavailable_needs_review"
+    assert candidates[0]["city"] == "Kolkata"
+    organizations = build_orgs(candidates)
+    assert len(organizations) == 1
+    assert organizations[0].relevance_verified is False
+
+
 def test_placeholder_copy_is_flagged():
     text = "Solar solutions. " * 30 + "Dolore magna aliqua"
     assert "placeholder text detected" in _quality_reason(text)
@@ -98,8 +117,11 @@ def test_directory_host_is_not_used_as_company_homepage():
 
 def test_403_stops_live_url_variant_retries():
     blocked = SimpleNamespace(status_code=403, text="forbidden", url="https://example.com/")
-    with patch("agent.fetch._get", return_value=blocked) as get, patch("agent.fetch._wayback", return_value=None):
-        result = fetch_page("https://example.com/")
+    with tempfile.TemporaryDirectory() as directory:
+        with patch("agent.fetch.CACHE_DIR", Path(directory)), \
+             patch("agent.fetch._get", return_value=blocked) as get, \
+             patch("agent.fetch._wayback", return_value=None):
+            result = fetch_page("https://example.com/")
     assert result["status"] == "dead"
     assert result["http_status"] == 403
     assert get.call_count == 1
@@ -142,5 +164,6 @@ if __name__ == "__main__":
     test_csr_publisher_is_filtered_as_a_discovery_source()
     test_classifier_sees_source_host_and_sponsor_exclusion_rules()
     test_city_is_only_kept_when_present_in_result_evidence()
+    test_classifier_quota_fallback_is_review_only()
     test_placeholder_copy_is_flagged()
     print("grounding tests passed")

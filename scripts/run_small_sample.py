@@ -330,6 +330,7 @@ def main() -> int:
     records = run_discovery(
         classification_plan,
         search_fn=lambda _query: selected_results,
+        replan_fn=lambda *_args: [],  # This test runner has a fixed explicit call budget.
         enrich=False,  # The bounded runner already performed and logged its enrichment.
     )
     lookup_drop_reasons = Counter()
@@ -395,6 +396,7 @@ def main() -> int:
             sheet_id="",
             credentials_path="",
             run_context={"category": plan.category, "target_location": city},
+            people_result=people_result,
         )
         full_pipeline = {
             "decision_makers": [
@@ -422,6 +424,7 @@ def main() -> int:
                 "duplicates_skipped": export_result.duplicates_skipped,
                 "dropped": export_result.dropped,
                 "csv_path": export_result.csv_path,
+                "lead_all_csv_path": export_result.lead_all_csv_path,
                 "audit_csv_path": export_result.audit_csv_path,
                 "database_path": export_result.database_path,
                 "review_candidates": export_result.review_candidates,

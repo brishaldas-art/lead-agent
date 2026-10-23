@@ -4,11 +4,12 @@ import csv
 import sqlite3
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 from agent.schemas import OrgCandidate
 from agent.step3_people import Person
 from agent.step4_contacts import Contact, Step4Outcome, VerifiedLead
-from agent.step5_export import AUDIT_HEADERS, MAIN_HEADERS, export_verified_leads
+from agent.step5_export import AUDIT_HEADERS, LEAD_ALL_HEADERS, MAIN_HEADERS, export_verified_leads
 
 
 def sample_inputs():
@@ -47,7 +48,23 @@ def sample_inputs():
             },
         ],
     }]
-    return Step4Outcome(verified=[lead]), records
+    step4 = Step4Outcome(
+        verified=[lead],
+        observed_contacts=[{
+            "organization_name": "Acme Solar",
+            "root_domain": "acmesolar.in",
+            "channel": "info@acmesolar.in",
+            "channel_type": "email",
+            "verification_status": "Observed—generic inbox; not person-verified",
+            "evidence_urls": ["https://acmesolar.in/contact"],
+            "checks_passed": ["published_on_live_official_domain_page"],
+        }],
+    )
+    people = SimpleNamespace(
+        identified=[SimpleNamespace(org=org, person=person, all_candidates=[person])],
+        dropped=[],
+    )
+    return step4, records, people
 
 
 class FakeWorksheet:
@@ -92,13 +109,14 @@ class FakeSheetsClient:
 
 
 def test_local_csv_sqlite_audit_and_deduplication_are_idempotent():
-    outcome, records = sample_inputs()
+    outcome, records, people = sample_inputs()
     with tempfile.TemporaryDirectory() as temp_dir:
         output = Path(temp_dir)
         first = export_verified_leads(
             outcome,
             records,
             output_dir=output,
+            people_result=people,
             sheet_id="",
             credentials_path="",
         )
@@ -106,6 +124,7 @@ def test_local_csv_sqlite_audit_and_deduplication_are_idempotent():
             outcome,
             records,
             output_dir=output,
+            people_result=people,
             sheet_id="",
             credentials_path="",
         )
@@ -122,6 +141,7 @@ def test_local_csv_sqlite_audit_and_deduplication_are_idempotent():
         assert first.sheets_status == "not_configured"
         assert Path(first.csv_path).is_file()
         assert Path(first.audit_csv_path).is_file()
+        assert Path(first.lead_all_csv_path).is_file()
         assert Path(first.database_path).is_file()
 
         with Path(first.csv_path).open(encoding="utf-8-sig", newline="") as stream:
@@ -140,6 +160,15 @@ def test_local_csv_sqlite_audit_and_deduplication_are_idempotent():
         assert audit_rows[1][5] == "email"
         assert "mx_ok" in audit_rows[1][11]
 
+        with Path(first.lead_all_csv_path).open(encoding="utf-8-sig", newline="") as stream:
+            review_rows = list(csv.reader(stream))
+        assert tuple(review_rows[0]) == LEAD_ALL_HEADERS
+        assert len(review_rows) == 2
+        assert review_rows[1][7] == "Confirmed on live official page"
+        assert "Asha Banerjee" in review_rows[1][12]
+        assert "info@acmesolar.in" in review_rows[1][13]
+        assert "asha.banerjee@acmesolar.in" in review_rows[1][14]
+
         with sqlite3.connect(first.database_path) as connection:
             assert connection.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 1
             assert connection.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 1
@@ -147,8 +176,23 @@ def test_local_csv_sqlite_audit_and_deduplication_are_idempotent():
             assert connection.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0] == 2
 
 
+def test_city_alias_confirms_official_location():
+    outcome, records, people = sample_inputs()
+    records[0]["pages"][0]["text"] = "Registered office: Calcutta, West Bengal."
+    with tempfile.TemporaryDirectory() as temp_dir:
+        result = export_verified_leads(
+            outcome, records, output_dir=Path(temp_dir), sheet_id="",
+            credentials_path="", people_result=people,
+            run_context={"category": "Sponsor", "target_location": "Kolkata"},
+        )
+        assert result.rows_added == 1
+        with Path(result.lead_all_csv_path).open(encoding="utf-8-sig", newline="") as stream:
+            rows = list(csv.reader(stream))
+        assert rows[1][7] == "Confirmed on live official page"
+
+
 def test_unconfirmed_location_drops_row_and_does_not_call_sheets():
-    outcome, records = sample_inputs()
+    outcome, records, people = sample_inputs()
     records[0]["pages"][0]["text"] = "Acme Solar office address: West Bengal."
     calls = []
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -156,6 +200,7 @@ def test_unconfirmed_location_drops_row_and_does_not_call_sheets():
             outcome,
             records,
             output_dir=Path(temp_dir),
+            people_result=people,
             sheet_id="",
             credentials_path="",
             sheets_client_factory=lambda _path: calls.append(_path),
@@ -188,6 +233,8 @@ def test_empty_run_still_records_a_run_in_sqlite():
         )
         assert result.review_candidates == 0
         assert result.run_id == 1
+        with Path(result.lead_all_csv_path).open(encoding="utf-8-sig", newline="") as stream:
+            assert tuple(next(csv.reader(stream))) == LEAD_ALL_HEADERS
         with sqlite3.connect(result.database_path) as connection:
             assert connection.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 0
             assert connection.execute("SELECT COUNT(*) FROM candidate_review").fetchone()[0] == 0
@@ -197,8 +244,67 @@ def test_empty_run_still_records_a_run_in_sqlite():
             assert run == ("Sponsor", "Kolkata", 0)
 
 
+def test_quota_fallback_candidate_is_not_exported_as_accepted_lead():
+    step4, records, people = sample_inputs()
+    original = step4.verified[0]
+    review_org = original.org.model_copy(update={
+        "relevance_verified": False,
+        "classification_status": "llm_unavailable_needs_review",
+    })
+    review_lead = original.model_copy(update={"org": review_org})
+    step4.verified = [review_lead]
+    records[0]["org"] = review_org
+    with tempfile.TemporaryDirectory() as temp_dir:
+        result = export_verified_leads(
+            step4, records, output_dir=Path(temp_dir), sheet_id="",
+            credentials_path="", people_result=people,
+        )
+        assert result.rows_added == 0
+        assert result.dropped[0]["reason"] == "organization relevance is awaiting human review"
+        with Path(result.lead_all_csv_path).open(encoding="utf-8-sig", newline="") as stream:
+            rows = list(csv.reader(stream))
+        assert len(rows) == 2
+        assert rows[1][6] == "llm_unavailable_needs_review"
+
+
+def test_review_csv_keeps_candidate_with_no_pages_or_contact():
+    org = OrgCandidate(
+        org_name="Sample Systems",
+        category="Sponsor",
+        city=None,
+        domain="samplesystems.in",
+        homepage="https://samplesystems.in/",
+        discovered_via="search",
+    )
+    record = {
+        "org": org,
+        "pages": [],
+        "candidate_status": "no_page_available",
+        "verification": {"status": "location_unverified", "target_city": "Kolkata"},
+    }
+    people = SimpleNamespace(identified=[], dropped=[{
+        "org_name": "Sample Systems", "domain": "samplesystems.in", "reason": "no usable official-site pages",
+    }])
+    with tempfile.TemporaryDirectory() as temp_dir:
+        result = export_verified_leads(
+            Step4Outcome(), [record], output_dir=Path(temp_dir),
+            sheet_id="", credentials_path="", people_result=people,
+        )
+        assert result.rows_added == 0
+        with Path(result.lead_all_csv_path).open(encoding="utf-8-sig", newline="") as stream:
+            rows = list(csv.reader(stream))
+        assert len(rows) == 2
+        assert rows[1][0] == "Sample Systems"
+        assert rows[1][4] == "https://samplesystems.in/"
+        assert rows[1][5] == "no_page_available"
+        assert "no usable official-site pages" in rows[1][-1]
+        with sqlite3.connect(result.database_path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 0
+            assert connection.execute("SELECT COUNT(*) FROM candidate_review").fetchone()[0] == 1
+
+
 def test_optional_google_sheet_sync_uses_fake_client_and_exact_headers():
-    outcome, records = sample_inputs()
+    outcome, records, people = sample_inputs()
     spreadsheet = FakeSpreadsheet()
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
@@ -214,6 +320,7 @@ def test_optional_google_sheet_sync_uses_fake_client_and_exact_headers():
             outcome,
             records,
             output_dir=root,
+            people_result=people,
             sheet_id="offline-sheet-id",
             credentials_path=credential_file,
             sheets_client_factory=factory,
@@ -230,7 +337,10 @@ def test_optional_google_sheet_sync_uses_fake_client_and_exact_headers():
 
 if __name__ == "__main__":
     test_local_csv_sqlite_audit_and_deduplication_are_idempotent()
+    test_city_alias_confirms_official_location()
     test_unconfirmed_location_drops_row_and_does_not_call_sheets()
     test_empty_run_still_records_a_run_in_sqlite()
+    test_quota_fallback_candidate_is_not_exported_as_accepted_lead()
+    test_review_csv_keeps_candidate_with_no_pages_or_contact()
     test_optional_google_sheet_sync_uses_fake_client_and_exact_headers()
     print("Step 5 offline tests passed; no Google API or network calls were made.")

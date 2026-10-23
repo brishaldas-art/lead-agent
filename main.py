@@ -76,11 +76,16 @@ def main() -> int:
 
     print("\nRunning discovery...")
     records = run_discovery(plan)
-    print(f"\nOrganizations with usable pages: {len(records)}")
+    usable_page_orgs = sum(
+        1 for rec in records
+        if any(str(page.get("status", "")).casefold() in {"ok", "wayback"} and str(page.get("text", "")).strip() for page in rec.get("pages", []))
+    )
+    print(f"\nDiscovered organization candidates: {len(records)}")
+    print(f"Organizations with usable official/archived pages: {usable_page_orgs}")
     for rec in records:
         org = rec["org"]
         statuses = ", ".join(p["status"] for p in rec["pages"])
-        print(f"- {org.org_name} | {org.domain} | pages: {statuses}")
+        print(f"- {org.org_name} | {org.domain} | candidate status: {rec.get('candidate_status', 'unknown')} | pages: {statuses or 'none'}")
         verification = rec.get("verification", {})
         if verification:
             print(f"  Evidence check: {verification['status']}")
@@ -135,7 +140,13 @@ def main() -> int:
             f"| sources: {', '.join(str(url) for url in lead.contact.supporting_urls)} "
             f"| checks: {', '.join(lead.contact.checks_passed)}"
         )
-    print(f"Organizations without a verified contact: {len(contact_result.dropped)}")
+    verified_contact_domains = {
+        str(item.org.domain).casefold() for item in contact_result.verified
+    }
+    candidate_domains = {
+        str(rec["org"].domain).casefold() for rec in records if rec.get("org") is not None
+    }
+    print(f"Organizations without a verified contact: {len(candidate_domains - verified_contact_domains)}")
     for item in contact_result.dropped:
         print(f"- {item['org_name']} | {item['domain']} | {item['reason']}")
 
@@ -146,6 +157,7 @@ def main() -> int:
         contact_result,
         records,
         run_context={"category": plan.category, "target_location": plan.city or ""},
+        people_result=people_result,
     )
     print(
         f"New local rows: {export_result.rows_added}; "
@@ -154,6 +166,7 @@ def main() -> int:
         f"invalid/unverified rows dropped: {len(export_result.dropped)}"
     )
     print(f"CSV: {export_result.csv_path}")
+    print(f"All candidates CSV: {export_result.lead_all_csv_path}")
     print(f"Audit CSV: {export_result.audit_csv_path}")
     print(f"SQLite: {export_result.database_path}")
     print(

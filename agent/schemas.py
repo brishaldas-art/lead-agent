@@ -45,6 +45,8 @@ class OrgCandidate(BaseModel):
     domain: str
     homepage: str
     discovered_via: str
+    relevance_verified: bool = True
+    classification_status: str = "verified"
     
 class NewQueries(BaseModel):
     queries: list[str]

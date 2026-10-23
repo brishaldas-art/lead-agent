@@ -37,6 +37,18 @@ def test_transient_empty_search_is_retried_on_next_run():
             assert cache_path.exists()
 
 
+def test_stale_nonempty_search_cache_expires():
+    query = "software firms Kolkata"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        with patch.object(search, "CACHE_DIR", Path(temp_dir)), patch.object(search, "DELAY_SECONDS", 0):
+            cache_path = search._cache_path(query)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text('{"cached_at": 1, "results": [{"url": "https://old.example/"}]}', encoding="utf-8")
+            with patch.object(search, "DDGS", return_value=SuccessfulDDGS()):
+                rows = search.run_query(query)
+            assert rows[0]["url"] == "https://example.org/"
+
+
 def test_previously_cached_empty_search_is_not_a_permanent_miss():
     query = "software companies Kolkata"
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -52,5 +64,6 @@ def test_previously_cached_empty_search_is_not_a_permanent_miss():
 
 if __name__ == "__main__":
     test_transient_empty_search_is_retried_on_next_run()
+    test_stale_nonempty_search_cache_expires()
     test_previously_cached_empty_search_is_not_a_permanent_miss()
     print("Search cache tests passed; no live search or network calls were made.")

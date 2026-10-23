@@ -8,6 +8,8 @@ from urllib.parse import urlparse, urlunparse
 import tldextract
 from rapidfuzz import fuzz
 
+from agent.location import city_pattern
+
 _SUFFIX_EXTRACTOR = tldextract.TLDExtract(suffix_list_urls=())
 
 
@@ -94,13 +96,22 @@ def listicle_names(snippet: str) -> list[str]:
 
 
 def canonical_url_key(url: str) -> str:
-    """Drop tracking query/fragments for duplicate-result detection."""
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").lower()
-    if host.startswith("www."):
-        host = host[4:]
-    path = parsed.path.rstrip("/").lower()
-    return urlunparse((parsed.scheme.lower(), host, path, "", "", ""))
+    """Canonicalize a page URL for duplicate-result detection."""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if not host:
+            return ""
+        port = parsed.port
+        netloc = f"{host}:{port}" if port and port not in {80, 443} else host
+        path = re.sub(r"/{2,}", "/", parsed.path or "/").rstrip("/").lower() or "/"
+        # Scheme, query parameters, and fragments are not identity signals for
+        # a search result. This also collapses HTTP/HTTPS and www/non-www copies.
+        return urlunparse(("https", netloc, path, "", "", ""))
+    except (TypeError, ValueError):
+        return ""
 
 
 def result_matches_name(name: str, result: dict, threshold: int = 72) -> bool:
@@ -116,18 +127,13 @@ def social_matches_name(name: str, result: dict, threshold: int = 78) -> bool:
 
 def summarize_official_evidence(domain: str, search_results: list[dict], pages: list[dict], city: str | None) -> dict:
     """Report local, sponsorship, and related-CSR signals from company-domain evidence only."""
+    # Search snippets are discovery hints, not proof from a live official page.
+    # Only fetched HTTP-200 pages on the organization's own domain can support
+    # location or sponsorship evidence here.
     evidence = []
-    for row in search_results:
-        url = row.get("url", "")
-        host = (urlparse(url).hostname or "").lower()
-        if host.startswith("www."):
-            host = host[4:]
-        if host == domain or host.endswith("." + domain):
-            evidence.append({
-                "url": url,
-                "text": f"{row.get('title', '')} {row.get('snippet', '')}",
-            })
     for page in pages:
+        if str(page.get("status", "")).casefold() != "ok":
+            continue
         url = page.get("url", "")
         host = (urlparse(url).hostname or "").lower()
         if host.startswith("www."):
@@ -146,11 +152,11 @@ def summarize_official_evidence(domain: str, search_results: list[dict], pages: 
         r"funding|scholarship|outreach|youth)\b",
         re.I,
     )
-    city_pattern = re.compile(rf"(?<!\w){re.escape(city.strip())}(?!\w)", re.I) if city else None
+    city_matcher = city_pattern(city)
     location_sources, direct_sponsor_sources, related_signal_sources = [], [], []
     for item in evidence:
         text = item["text"]
-        if city_pattern and city_pattern.search(text):
+        if city_matcher and city_matcher.search(text):
             location_sources.append(item["url"])
         if direct_sponsor_pattern.search(text):
             direct_sponsor_sources.append(item["url"])

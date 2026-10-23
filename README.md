@@ -92,7 +92,7 @@ python -m scripts.run_small_sample --city "Kolkata" --industry "renewable energy
 
 Deterministic city mode skips the Step 1 model call, limits classification to 18 candidates, batches all selected organizations (3 by default, at most 5) into one Step 3 call, and permits at most one Step 3 fallback call within a 3-call Gemini budget. Transient API failures may cause additional retry attempts; the reported token usage is the provider's response metadata. It runs live search/page fetch and Step 4's ordinary contact checks, then writes Step 5 outputs to `outputs/live_sample/`. Google Sheets is forcibly disabled for this test. Set `OFFLINE=0` and configure `GEMINI_API_KEY` in the local `.env`; the runner exits before searching if these are missing or offline mode remains enabled. Never paste the key into chat.
 
-The corresponding research brief is in `data/sponsor_search_brief.txt`. Company-directory hosts are filtered as discovery sources, and a candidate homepage must also resemble the organization's brand or initials. Public social/list snippets can seed name lookups (including business-like Instagram post titles), but are not treated as company-site evidence. The normal `main.py --prompt` Sponsor/Both discovery uses the same bounded enrichment by default: up to two public social searches, seven exact-name lookups, and a 30-result classification cap when verified lookup results are available. Social/list sources are returned under a separately labeled `discovery_evidence` field and printed as discovery-only evidence. Location evidence, direct sponsorship wording, and weaker CSR/community signals are reported separately; CSR keywords alone do not count as sponsorship, and absence of a signal is not proof that an organization is unsuitable.
+The corresponding research brief is in `data/sponsor_search_brief.txt`. Company-directory hosts are filtered as discovery sources, and a candidate homepage must also resemble the organization's brand or initials. Public social/list snippets can seed bounded name lookups, but are never treated as company-site evidence. Enrichment is capped (two social searches and up to four exact-name lookups) and only runs when fewer than `MIN_ORGS` candidates have usable official/archived pages. Brochure seeds are resolved first by exact-name search and code-only domain checks. Location evidence, direct sponsorship wording, and weaker CSR/community signals are reported separately; CSR keywords alone do not count as sponsorship.
 
 ## How it works
 
@@ -104,22 +104,22 @@ The corresponding research brief is in `data/sponsor_search_brief.txt`. Company-
 
 ### Part 2: Lead discovery
 
-1. **Search:** each query runs through DuckDuckGo (`ddgs`). Results are cached.
-2. **Filter (code, no tokens):** results from directories, news sites, social networks, listicles, event agencies, sponsorship agencies, and blocked domains in `data/blocked_domains.txt` are dropped. Results whose title or snippet contains words such as "foundation", "trust", "university" or "agency" are also dropped.
-3. **Classify (Gemini, batched):** up to 30 results per call. Gemini returns whether each result is a relevant company in the requested industry. Code then checks that the organization name appears in that result's title or snippet.
-4. **Organizations:** one record per root domain. The URL and domain come from the search result, never from Gemini.
-5. **Crawl:** the homepage is fetched and links are scored by keyword (team, about, leadership, contact, sponsors, CSR and similar). The best few pages are fetched, to a depth of 2.
-6. **Failure ladder:** a failed page is retried, then tried at an alternate URL (http/https, with or without www), then loaded from the Wayback Machine. If all of these fail, the organization falls back to its search snippet and is marked as not usable.
-7. **Re-plan (at most one round):** if too few organizations are usable, Gemini proposes up to 4 new search queries. Code rejects any query that is longer than 5 words, contains a URL, repeats an earlier query, or contains event words for a company run.
-8. **Stop conditions:** the run ends when it reaches `MAX_ORGS`, the call budget (`MAX_CALLS_PER_RUN`) or the re-plan limit.
+1. **Search:** queries run through DuckDuckGo (`ddgs`) with a TTL cache. Duplicate URLs are normalized and removed before Gemini classification.
+2. **Resolve seeds first:** names grounded in a brochure are searched directly; a seed is admitted only when a result matches the name and the domain resembles the brand. A seed lookup never relies on Gemini to invent a URL.
+3. **Filter and classify:** code removes blocked domains/file types/listicles; Gemini classifies batches of up to 30. Names must be grounded in the original title/snippet. If Gemini is unavailable, tightly constrained domain-matched rows can be retained as `needs_review`, never as verified relevance.
+4. **Candidate vs. usable-page counts:** every brand/domain-matched organization can be retained as a review candidate even if its site fails to load. Only organizations with usable official or archived page text count toward `MIN_ORGS` and suppress re-planning. A search snippet is labeled `snippet_only`, not treated as an official page or success.
+5. **Crawl:** fetch the homepage, score same-domain links, and fetch a small number concurrently. Requests have bounded retries and a Step 2 discovery time budget. A TTL page cache avoids re-downloading successful pages on immediate reruns.
+6. **Failure ladder:** transport errors retry; HTTP 401/403/429 are respected; simple URL variants are tried where appropriate; public Wayback snapshots are labelled archival evidence. A richer archived copy may supplement a thin live page, but never replaces it as current proof.
+7. **Re-plan (at most one round by default):** when usable official/archived pages are below `MIN_ORGS`, Gemini may propose up to four new queries. Prompt and validator both require 3–5 words; repeats, URLs and banned terms are rejected.
+8. **Stop conditions:** stop on the run time budget, candidate cap, usable-page cap, call budget, or re-plan limit. The CLI reports candidates separately from organizations with usable pages.
 
 ### Part 3: Decision-maker identification
 
-After discovery, each usable organization is checked against the editable priority roles in `data/role_keywords.json`, even if city evidence is not yet confirmed. This preserves contact evidence for manual review; Step 5 still rejects any lead without city evidence on a live official page. Step 3 builds merged windows around role keywords, labels every window with its original page URL, and caps context at 6,000 characters per organization. It batches up to `BATCH_ORGS` organizations per Gemini `smart` request.
+Step 3 receives all retained candidates, but only usable official/archived page text can form primary evidence windows. Candidates without role-bearing text remain in `lead_all.csv`; snippet fallback is separately bounded. City proof is not a precondition for looking for a person, and Step 5 remains responsible for the final live-page location gate. Step 3 builds merged windows around configured role keywords, labels each window with its source URL, caps context at 6,000 characters per organization, and batches up to `BATCH_ORGS` organizations per Gemini `smart` request.
 
 Gemini only proposes a name, role, organization ID, and source URL. Code rejects candidates unless the person name is present in the original source text (fuzzy score at least 92), a matching target role is supported within 300 characters, and the returned URL exactly matches a labelled page. Candidates are ranked by role priority, page type, and live-versus-Wayback source; the highest-ranked person is selected and the others are retained for audit. Generic entries and prompt-injected claims are not accepted without source grounding.
 
-If no grounded person is found, Step 3 may search the organization's own domain for the highest-priority role and inspect same-domain result snippets. This fallback is limited by `MAX_SNIPPET_FALLBACKS` (default 5); snippet-only sources receive a lower score. Organizations without a grounded person are reported as dropped with a reason. Step 3 never fabricates a name or visits LinkedIn to infer employment.
+If no grounded person is found, Step 3 may search the organization's own domain for the highest-priority role and inspect same-domain result snippets. This fallback is limited by `MAX_SNIPPET_FALLBACKS` (default 2); snippet-only candidates remain clearly marked and never become official-page evidence. Step 3 never fabricates a name or visits LinkedIn to infer employment.
 
 The offline Step 3 tests use fake model and search functions, so they make **zero API calls and zero live searches**:
 
@@ -132,7 +132,7 @@ python -m tests.test_step4_contacts
 
 ### Part 4: Contact extraction and verification
 
-Step 4 is code-only; Gemini never generates or verifies a contact. It scans live official-domain HTML/text for `mailto:` and plain emails, de-obfuscates common `[at]`/`[dot]` forms, and decodes Cloudflare `data-cfemail`. Generic inboxes and emails outside the organization domain are rejected. An email is `Verified` only when it was found on a live official page, its local part matches the Step 3 person, its syntax passes, and the email domain has MX records.
+Step 4 is code-only; Gemini never generates or verifies a contact. It scans live official-domain HTML/text for `mailto:` and plain emails, de-obfuscates common `[at]`/`[dot]` forms, and decodes Cloudflare `data-cfemail`. Every observed public email is retained in the review data with its source and an explicit unverified status, including generic inboxes. An email is `Verified` only when it was found on a live official page, its local part matches the Step 3 person, its syntax passes, and the email domain has MX records.
 
 If no exact personal email qualifies, the agent may derive an address only from a dominant same-domain format observed in at least two distinct personal-looking addresses. These are labeled `Pattern-Derived`, never `Verified`. As a final fallback, profile links must be present in the official page HTML, return HTTP 200 on a single ordinary request, and match the person or organization. No login, retries, SMTP probing, or bot-protection bypass is used. Wayback-only contact data is not considered current verification. Each accepted contact retains its evidence/supporting URLs and passed checks in the result and CLI output.
 
@@ -144,7 +144,7 @@ python -m tests.test_step4_contacts
 
 ### Part 5: Validation and export
 
-Step 5 consumes only Step 4 verified contacts and makes **zero Gemini calls**. It validates the exact six-column row, requires the organization city to appear in a live official-domain page, deduplicates on root domain/contact (with fuzzy organization-name matching), and records row-level drop reasons. It always writes `outputs/leads.csv`, `outputs/leads.db`, and `outputs/audit_log.csv` before any optional Sheets connection. The main CSV/sheet and SQLite `leads` table contain only verified, accepted leads; the SQLite database also records every discovered organization in `candidate_review` with evidence, any Step 4-verified contact, and review reasons, plus each run in `pipeline_runs`, even when zero leads qualify. These review rows are explicitly not accepted leads. Source URLs and checks stay in the audit outputs.
+Step 5 makes **zero Gemini calls**. It validates and deduplicates accepted rows, requires the requested city (including a configured alias) to appear in a live official-domain page, and records row-level drop reasons. It writes `outputs/lead_all.csv`, `outputs/leads.csv`, `outputs/leads.db`, and `outputs/audit_log.csv` before any optional Sheets connection. `lead_all.csv` has one row per discovered organization and retains candidate/page status, location and sponsorship evidence, Step 3 person candidates, public emails observed by Step 4, verified contacts, and review reasons. These review rows are not accepted leads. `leads.csv` and SQLite `leads` remain verified-only. The database also records `candidate_review` history and every run in `pipeline_runs`, including runs with zero accepted leads. Sponsorship evidence is recorded for review but is not currently a hard Step 5 export gate; location and a verified contact are.
 
 Google Sheets is optional and is attempted only when both `SHEET_ID` and `GOOGLE_CREDENTIALS` are set and the credential file exists. Without them, local exports still complete and no Google request is made. For a later Sheets test, enable the Google Sheets and Drive APIs in a no-billing Cloud project, create a service account, save its JSON key locally as `credentials.json`, share the target spreadsheet with that service-account email as Editor, and set the two variables in `.env`. Never paste or commit the JSON key. The agent does not change the sheet's sharing permissions.
 
@@ -173,7 +173,14 @@ MAX_ORGS=20
 BATCH_ORGS=5
 MAX_CALLS_PER_RUN=10
 MAX_SNIPPET_FALLBACKS=2
-REPLAN_ROUNDS=0
+MIN_ORGS=5
+REPLAN_ROUNDS=1
+MAX_CANDIDATES=40
+MAX_SEED_ORGS=10
+MAX_ENRICHMENT_SEEDS=4
+TIME_BUDGET_MIN=8
+SEARCH_CACHE_TTL_HOURS=48
+PAGE_CACHE_TTL_HOURS=72
 OFFLINE=1
 SHEET_ID=
 GOOGLE_CREDENTIALS=credentials.json
@@ -189,7 +196,7 @@ Each model name in `MODEL_FAST` and `MODEL_SMART` is tried in order. When one mo
 - Usage is tracked in `outputs/.budget.json`; its `date` is the Pacific calendar date used for quota rollover. A new date is written immediately on startup, even if the run only hits cache.
 - To replay a previous run without any requests, use `--offline` with the same inputs.
 
-The safe profile is `MAX_CALLS_PER_RUN=10`, `MAX_ORGS=20`, `BATCH_ORGS=5`, `MAX_SNIPPET_FALLBACKS=2`, and `REPLAN_ROUNDS=0`. The code hard-caps each run at 10 accounted Gemini responses even if an older `.env` asks for more. This aims to allow two full runs within the typical 20-requests-per-model daily limit; usage already spent today still counts, and actual call needs vary by prompt/cache/results. The saved budget file is intentionally retained across runs and rolls over at midnight Pacific. If you already have `.env`, update `MAX_ORGS`, `BATCH_ORGS`, fallback, and replan values to match the safe profile; `.env` is local and git-ignored.
+The conservative profile is `MAX_CALLS_PER_RUN=10`, `MAX_ORGS=20`, `MAX_CANDIDATES=40`, `BATCH_ORGS=5`, `MAX_SNIPPET_FALLBACKS=2`, `MIN_ORGS=5`, and at most one re-plan round. The code hard-caps each run at 10 accounted Gemini responses even if an older `.env` asks for more. Re-planning consumes a call only when usable official/archived page yield is below target. Usage already spent today still counts; search/page caches reduce repeat work. If you already have `.env`, update the relevant settings manually; `.env` is local and git-ignored.
 
 ## Tests
 
@@ -207,6 +214,9 @@ python -m tests.test_step4_contacts
 python -m tests.test_step5_export
 python -m tests.test_small_sample
 python -m tests.test_search_cache
+python -m tests.test_fetch
+python -m tests.test_discovery_seeds
+python -m tests.test_location
 python -m tests.test_budget
 ```
 
@@ -221,7 +231,8 @@ agent/
   schemas.py                 data models
   step1_input.py             prompt and PDF to SearchPlan, query builder
   search.py                  web search with caching
-  filters.py                 drops directories, news, agencies, blocked domains
+  filters.py                 domain, file-type and listicle pre-filters
+  location.py                shared city-alias matching
   classify.py                Gemini batch classification with grounding check
   orgs.py                    organization records, root-domain dedupe
   crawl.py                   homepage link scoring
@@ -236,11 +247,10 @@ scripts/
   make_sample_brochure.py    creates data/sample_brochure.pdf
 data/
   sample_brochure.pdf        test brochure
-  blocked_domains.txt        domains excluded from search results
   role_keywords.json         editable decision-maker role priorities
   generic_inboxes.txt        local-parts rejected as shared inboxes
 tests/                       offline tests
-outputs/                     cache, usage, trace, leads.csv, audit_log.csv and leads.db (git-ignored)
+outputs/                     caches, usage, trace, lead_all.csv, leads.csv, audit_log.csv and leads.db (git-ignored)
 ```
 
 ## Known limitations

@@ -250,6 +250,26 @@ def test_wayback_only_emails_and_unmatched_contacts_are_not_verified():
     assert "no live official-domain pages" in result.dropped[0]["reason"]
 
 
+def test_public_generic_contact_is_retained_for_review_without_a_person():
+    org = make_org()
+    page = {
+        "url": "https://acmesolar.in/contact",
+        "status": "ok",
+        "text": "Contact us at info@acmesolar.in",
+        "html": '<a href="mailto:info@acmesolar.in">Contact</a>',
+    }
+    result = verify_contacts(
+        Step3Outcome(),
+        [{"org": org, "pages": [page]}],
+        mx_lookup=lambda _domain: (_ for _ in ()).throw(AssertionError("no MX check expected")),
+        profile_fetch_fn=lambda _url: None,
+    )
+    assert result.verified == []
+    assert result.observed_contacts[0]["channel"] == "info@acmesolar.in"
+    assert "generic inbox" in result.observed_contacts[0]["verification_status"]
+    assert result.observed_contacts[0]["evidence_urls"] == [page["url"]]
+
+
 def test_email_name_variants_are_exact_after_normalization():
     assert email_matches_person("a.banerjee@acmesolar.in", "Dr. Asha Banerjee")
     assert email_matches_person("banerjee.asha@acmesolar.in", "Asha Banerjee")
@@ -264,5 +284,6 @@ if __name__ == "__main__":
     test_profile_fallback_rejects_non_200_responses()
     test_pattern_derived_email_requires_two_same_domain_examples_and_mx()
     test_wayback_only_emails_and_unmatched_contacts_are_not_verified()
+    test_public_generic_contact_is_retained_for_review_without_a_person()
     test_email_name_variants_are_exact_after_normalization()
     print("Step 4 offline tests passed; no DNS, API, or live HTTP calls were made.")

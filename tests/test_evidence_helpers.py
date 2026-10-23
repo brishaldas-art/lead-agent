@@ -50,6 +50,7 @@ def test_lookup_result_must_mention_seed_and_urls_are_deduped():
         "snippet": "Solar manufacturer based in India",
     })
     assert canonical_url_key("https://www.example.com/About/?utm_source=ddg#team") == "https://example.com/about"
+    assert canonical_url_key("http://example.com/about/") == canonical_url_key("https://www.example.com/about")
     assert domain_matches_name("Jupiter International Limited", "https://jil-jupiter.com/contact")
     assert not domain_matches_name("Aegis Renewable Tech Solutions Pvt Ltd", "https://zaubacorp.com/company/aegis")
     assert domain_matches_name("Green Energy Private Limited", "https://greenenergy.in/")

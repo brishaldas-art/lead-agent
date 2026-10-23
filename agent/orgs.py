@@ -115,7 +115,9 @@ def build_orgs(classified: List[Dict], discovered_via: str = "search") -> List[O
             city=item.get("city"),
             domain=domain,
             homepage=homepage,
-            discovered_via=discovered_via,
+            discovered_via=item.get("discovered_via", discovered_via),
+            relevance_verified=bool(item.get("relevance_verified", True)),
+            classification_status=str(item.get("classification_status", "verified")),
         )
         seen_domains[domain] = candidate
         results.append(candidate)

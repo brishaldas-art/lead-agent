@@ -84,6 +84,7 @@ class EmailEvidence:
 class Step4Outcome:
     verified: list[VerifiedLead] = field(default_factory=list)
     dropped: list[dict[str, str]] = field(default_factory=list)
+    observed_contacts: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _ascii(value: str) -> str:
@@ -505,6 +506,30 @@ def verify_contacts(
     org_pages = _pages_for_org(discovery_records)
     mx_cache: dict[str, bool] = {}
     outcome = Step4Outcome()
+
+    # Keep every email visibly published on a live official page for review,
+    # even when no named person was found. These are observations, not verified
+    # person contacts; only the stricter checks below populate `verified`.
+    observed_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for domain, (org, pages) in org_pages.items():
+        for page in pages:
+            if str(page.get("status", "")).casefold() != "ok" or not _page_is_official_domain(page, domain):
+                continue
+            for item in extract_page_emails(page):
+                key = (domain.casefold(), item.address.casefold())
+                generic = is_generic_inbox(item.address, generic_inboxes)
+                contact_row = observed_by_key.setdefault(key, {
+                    "organization_name": str(org.get("org_name", "") if isinstance(org, dict) else getattr(org, "org_name", "")),
+                    "root_domain": domain,
+                    "channel": item.address,
+                    "channel_type": "email",
+                    "verification_status": "Observed—generic inbox; not person-verified" if generic else "Observed—person match not established",
+                    "evidence_urls": [],
+                    "checks_passed": ["published_on_live_official_domain_page"],
+                })
+                if item.source_url and item.source_url not in contact_row["evidence_urls"]:
+                    contact_row["evidence_urls"].append(item.source_url)
+    outcome.observed_contacts.extend(observed_by_key.values())
 
     for lead in identified:
         org = lead.org

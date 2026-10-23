@@ -71,7 +71,8 @@ def score_links(html: str, base_url: str, max_links: int = 5) -> List[Tuple[str,
         # Build absolute URL and strip fragment
         abs_url = urljoin(base_url, href)
         parsed = urlparse(abs_url)
-        abs_url = urlunparse(parsed._replace(fragment=""))
+        normalized_path = parsed.path.rstrip("/") or "/"
+        abs_url = urlunparse(parsed._replace(path=normalized_path, fragment=""))
         # Hostname must match base (ignore leading www.)
         if _clean_hostname(abs_url) != base_host:
             continue

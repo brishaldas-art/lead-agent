@@ -60,11 +60,12 @@ def test_production_enrichment_resolves_names_without_promoting_social_hosts():
                 return [result]
         return []
 
-    candidates, evidence = _enrich_search_results(plan, primary, fake_search)
+    candidates, evidence, used_queries = _enrich_search_results(plan, primary, fake_search)
     assert {row["url"] for row in candidates} == {row["url"] for row in official.values()}
     assert all("linkedin.com" not in row["url"] and "instagram.com" not in row["url"] for row in candidates)
     assert evidence["Jupiter International Limited"][0]["evidence_type"] == "public_social_discovery_only"
     assert evidence["Vega Solar"][0]["evidence_type"] == "listicle_discovery_only"
+    assert len(used_queries) <= 2 + 4
 
 
 def test_top_numbered_pages_are_filtered_as_listicles():

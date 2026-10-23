@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from rapidfuzz import fuzz
 
 from agent.step4_contacts import Step4Outcome, VerifiedLead
+from agent.location import city_pattern
 
 logger = logging.getLogger("agent.step5")
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +36,26 @@ MAIN_HEADERS = (
     "Contact Person",
     "Contact Channel",
     "Verification Status",
+)
+LEAD_ALL_HEADERS = (
+    "Organization Name",
+    "Category",
+    "Target Location",
+    "Root Domain",
+    "Homepage",
+    "Candidate Status",
+    "Classification Status",
+    "Official Location Status",
+    "Evidence Summary Status",
+    "Official Location Evidence URLs",
+    "Direct Sponsorship Evidence URLs",
+    "Related CSR Evidence URLs",
+    "Decision-Maker Candidates",
+    "Observed Public Contacts",
+    "Verified Contacts",
+    "Discovery-Only Evidence",
+    "Page Evidence",
+    "Review Reasons",
 )
 AUDIT_HEADERS = (
     "Organization Name",
@@ -111,6 +132,7 @@ class Step5Outcome:
     dropped: list[dict[str, str]] = field(default_factory=list)
     csv_path: str = ""
     audit_csv_path: str = ""
+    lead_all_csv_path: str = ""
     database_path: str = ""
     review_candidates: int = 0
     run_id: int = 0
@@ -196,7 +218,7 @@ def _location_evidence(lead: VerifiedLead, records_by_domain: dict[str, dict[str
     city = _clean_text(lead.org.city) or _clean_text(entry.get("target_city", ""))
     if not city:
         return "", []
-    city_pattern = re.compile(rf"(?<!\w){re.escape(city)}(?!\w)", re.I)
+    city_matcher = city_pattern(city)
     sources: list[str] = []
     for page in pages:
         if not _official_live_page(page, domain):
@@ -210,7 +232,7 @@ def _location_evidence(lead: VerifiedLead, records_by_domain: dict[str, dict[str
                 text = _clean_text(BeautifulSoup(str(page["html"]), "html.parser").get_text(" "))
             except Exception:
                 text = ""
-        if city_pattern.search(text):
+        if city_matcher and city_matcher.search(text):
             url = _clean_text(page.get("url", ""))
             if url and url not in sources:
                 sources.append(url)
@@ -224,6 +246,8 @@ def _prepare_lead(
     org = lead.org
     person = lead.person
     contact = lead.contact
+    if not bool(_value(org, "relevance_verified", True)):
+        raise ValueError("organization relevance is awaiting human review")
     city, location_urls = _location_evidence(lead, records_by_domain)
     if not city:
         raise ValueError("organization city is not confirmed in live official-domain page text")
@@ -297,6 +321,39 @@ def _write_audit_csv(path: Path, rows: list[_StoredLead]) -> None:
     temporary.replace(path)
 
 
+def _csv_safe(value: Any) -> str:
+    text = str(value or "")
+    if text.lstrip().startswith(("=", "+", "-", "@")):
+        return "'" + text
+    return text
+
+
+def _write_lead_all_csv(database_path: Path, path: Path) -> None:
+    columns = (
+        "organization_name", "category", "target_location", "root_domain", "homepage",
+        "candidate_status", "classification_status", "verification_status", "official_location_evidence_json",
+        "direct_sponsorship_evidence_json", "related_csr_evidence_json",
+        "step3_people_json", "observed_contacts_json", "step4_contacts_json",
+        "discovery_only_evidence_json", "pages_json", "review_reasons_json",
+    )
+    with sqlite3.connect(database_path) as connection:
+        _create_tables(connection)
+        rows = connection.execute(
+            f"SELECT {', '.join(columns)} FROM candidate_review ORDER BY organization_name COLLATE NOCASE"
+        ).fetchall()
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", newline="", encoding="utf-8-sig") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(LEAD_ALL_HEADERS)
+        # Keep one row per organization; JSON-valued cells preserve all source
+        # lists without multiplying contacts into misleading duplicate leads.
+        for row in rows:
+            location_urls = json.loads(row[8] or "[]")
+            display_row = [*row[:7], "Confirmed on live official page" if location_urls else "Unverified", *row[7:]]
+            writer.writerow([_csv_safe(value) for value in display_row])
+    temporary.replace(path)
+
+
 def _create_tables(connection: sqlite3.Connection) -> None:
     connection.execute(
         """CREATE TABLE IF NOT EXISTS leads (
@@ -334,10 +391,14 @@ def _create_tables(connection: sqlite3.Connection) -> None:
             target_location TEXT NOT NULL,
             homepage TEXT NOT NULL,
             verification_status TEXT NOT NULL,
+            candidate_status TEXT NOT NULL DEFAULT '',
+            classification_status TEXT NOT NULL DEFAULT 'verified',
             official_location_evidence_json TEXT NOT NULL,
             direct_sponsorship_evidence_json TEXT NOT NULL,
             related_csr_evidence_json TEXT NOT NULL,
+            step3_people_json TEXT NOT NULL DEFAULT '[]',
             step4_contacts_json TEXT NOT NULL,
+            observed_contacts_json TEXT NOT NULL DEFAULT '[]',
             discovery_only_evidence_json TEXT NOT NULL,
             pages_json TEXT NOT NULL,
             review_reasons_json TEXT NOT NULL,
@@ -359,6 +420,18 @@ def _create_tables(connection: sqlite3.Connection) -> None:
             invalid_rows_dropped INTEGER NOT NULL
         )"""
     )
+    # Add review fields to existing local databases without discarding history.
+    candidate_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(candidate_review)").fetchall()
+    }
+    for name, definition in (
+        ("candidate_status", "TEXT NOT NULL DEFAULT ''"),
+        ("classification_status", "TEXT NOT NULL DEFAULT 'verified'"),
+        ("step3_people_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("observed_contacts_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ):
+        if name not in candidate_columns:
+            connection.execute(f"ALTER TABLE candidate_review ADD COLUMN {name} {definition}")
 
 
 def _read_stored(connection: sqlite3.Connection) -> list[_StoredLead]:
@@ -459,6 +532,7 @@ def _persist_candidate_review(
     discovery_records: list[dict[str, Any]],
     step4_result: Any,
     *,
+    people_result: Any = None,
     run_context: dict[str, Any],
     export_drops: list[dict[str, str]],
     leads_added: int,
@@ -469,6 +543,29 @@ def _persist_candidate_review(
     """Keep discovered candidates and a run ledger separate from verified leads."""
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     verified_contacts = list(getattr(step4_result, "verified", step4_result) or [])
+    observed_contacts = list(getattr(step4_result, "observed_contacts", []) or [])
+    people_by_domain: dict[str, list[dict[str, Any]]] = {}
+    for entry in getattr(people_result, "identified", []) or []:
+        org = _value(entry, "org", {})
+        domain = _root_domain(str(_value(org, "domain", "")))
+        candidates = list(_value(entry, "all_candidates", []) or []) or [_value(entry, "person", {})]
+        if domain:
+            people_by_domain[domain] = [{
+                "person_name": _clean_text(_value(person, "full_name", "")),
+                "person_role": _clean_text(_value(person, "role", "")),
+                "source_url": _clean_text(_value(person, "source_url", "")),
+                "role_score": _value(person, "role_score", ""),
+            } for person in candidates]
+    people_drop_reasons: dict[str, list[str]] = {}
+    for item in getattr(people_result, "dropped", []) or []:
+        domain = _root_domain(str(item.get("domain", "")))
+        if domain:
+            people_drop_reasons.setdefault(domain, []).append(str(item.get("reason", "")))
+    observed_by_domain: dict[str, list[dict[str, Any]]] = {}
+    for item in observed_contacts:
+        domain = _root_domain(str(item.get("root_domain", "")))
+        if domain:
+            observed_by_domain.setdefault(domain, []).append(item)
     contact_domains = {
         _root_domain(str(_value(_value(item, "org", {}), "domain", "")))
         for item in verified_contacts
@@ -516,7 +613,7 @@ def _persist_candidate_review(
             )
             official_location_urls: list[str] = []
             if target_location:
-                location_pattern = re.compile(rf"(?<!\w){re.escape(target_location)}(?!\w)", re.I)
+                location_pattern = city_pattern(target_location)
                 for page in record.get("pages", []) or []:
                     if _official_live_page(page, domain) and location_pattern.search(_clean_text(page.get("text", ""))):
                         page_url = _clean_text(page.get("url", ""))
@@ -535,9 +632,15 @@ def _persist_candidate_review(
                     else "No direct sponsorship evidence was found in collected sources."
                 )
             if domain not in contact_domains:
+                reasons.extend(reason for reason in people_drop_reasons.get(domain, []) if reason)
                 reasons.extend(reason for reason in contact_drop_reasons.get(domain, []) if reason)
-                if not contact_drop_reasons.get(domain):
+                if not contact_drop_reasons.get(domain) and domain not in people_drop_reasons:
                     reasons.append("No verified contact was available for export in this run.")
+            if record.get("candidate_status") not in (None, "official_page_available"):
+                reasons.append(f"Candidate page status: {record.get('candidate_status')}.")
+            classification_status = _clean_text(_value(org, "classification_status", "verified"))
+            if classification_status != "gemini_grounded" and classification_status != "verified":
+                reasons.append(f"Organization relevance needs review: {classification_status}.")
             for dropped in export_drops:
                 if _clean_text(dropped.get("org_name", "")).casefold() == org_name.casefold():
                     reasons.append(str(dropped.get("reason", "")))
@@ -568,21 +671,26 @@ def _persist_candidate_review(
             connection.execute(
                 """INSERT INTO candidate_review (
                     root_domain, organization_name, category, target_location, homepage,
-                    verification_status, official_location_evidence_json,
+                    verification_status, candidate_status, classification_status, official_location_evidence_json,
                     direct_sponsorship_evidence_json, related_csr_evidence_json,
-                    step4_contacts_json, discovery_only_evidence_json, pages_json,
-                    review_reasons_json, first_seen_at_utc, last_seen_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    step3_people_json, step4_contacts_json, observed_contacts_json,
+                    discovery_only_evidence_json, pages_json, review_reasons_json,
+                    first_seen_at_utc, last_seen_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(root_domain) DO UPDATE SET
                     organization_name=excluded.organization_name,
                     category=excluded.category,
                     target_location=excluded.target_location,
                     homepage=excluded.homepage,
                     verification_status=excluded.verification_status,
+                    candidate_status=excluded.candidate_status,
+                    classification_status=excluded.classification_status,
                     official_location_evidence_json=excluded.official_location_evidence_json,
                     direct_sponsorship_evidence_json=excluded.direct_sponsorship_evidence_json,
                     related_csr_evidence_json=excluded.related_csr_evidence_json,
+                    step3_people_json=excluded.step3_people_json,
                     step4_contacts_json=excluded.step4_contacts_json,
+                    observed_contacts_json=excluded.observed_contacts_json,
                     discovery_only_evidence_json=excluded.discovery_only_evidence_json,
                     pages_json=excluded.pages_json,
                     review_reasons_json=excluded.review_reasons_json,
@@ -594,10 +702,14 @@ def _persist_candidate_review(
                     target_location,
                     _clean_text(_value(org, "homepage", "")),
                     _clean_text(_value(verification, "status", "not_checked")) or "not_checked",
+                    _clean_text(record.get("candidate_status", "")),
+                    _clean_text(_value(org, "classification_status", "verified")),
                     json.dumps(official_location_urls, ensure_ascii=False),
                     json.dumps(direct_urls, ensure_ascii=False),
                     json.dumps(related_urls, ensure_ascii=False),
+                    json.dumps(people_by_domain.get(domain, []), ensure_ascii=False),
                     json.dumps(contacts_by_domain.get(domain, []), ensure_ascii=False),
+                    json.dumps(observed_by_domain.get(domain, []), ensure_ascii=False),
                     json.dumps(discovery_only, ensure_ascii=False),
                     json.dumps(pages_summary, ensure_ascii=False),
                     json.dumps(list(dict.fromkeys(reason for reason in reasons if reason)), ensure_ascii=False),
@@ -733,6 +845,7 @@ def export_verified_leads(
     credentials_path: str | Path | None = None,
     sheets_client_factory: Callable[[str], Any] | None = None,
     run_context: dict[str, Any] | None = None,
+    people_result: Any = None,
 ) -> Step5Outcome:
     """Export verified contacts. Local files are always persisted before Sheets.
 
@@ -770,11 +883,13 @@ def export_verified_leads(
     outcome.duplicates_skipped = duplicates
     outcome.csv_path = str(output_path / "leads.csv")
     outcome.audit_csv_path = str(output_path / "audit_log.csv")
+    outcome.lead_all_csv_path = str(output_path / "lead_all.csv")
     outcome.database_path = str(output_path / "leads.db")
     outcome.review_candidates, outcome.run_id = _persist_candidate_review(
         Path(outcome.database_path),
         discovery_records,
         step4_result,
+        people_result=people_result,
         run_context=run_context or {},
         export_drops=outcome.dropped,
         leads_added=outcome.rows_added,
@@ -782,6 +897,7 @@ def export_verified_leads(
         duplicates_skipped=outcome.duplicates_skipped,
         invalid_rows_dropped=len(outcome.dropped),
     )
+    _write_lead_all_csv(Path(outcome.database_path), Path(outcome.lead_all_csv_path))
 
     configured_sheet_id = os.getenv("SHEET_ID", "") if sheet_id is None else str(sheet_id)
     configured_credentials = os.getenv("GOOGLE_CREDENTIALS", "") if credentials_path is None else str(credentials_path)
@@ -789,7 +905,7 @@ def export_verified_leads(
     configured_credentials = configured_credentials.strip()
     if not configured_sheet_id and not configured_credentials:
         outcome.sheets_status = "not_configured"
-        outcome.sheets_message = "Google Sheets skipped; local CSV, audit CSV, and SQLite exports are ready."
+        outcome.sheets_message = "Google Sheets skipped; lead_all.csv, leads.csv, audit CSV, and SQLite exports are ready."
         return outcome
     if not configured_sheet_id or not configured_credentials:
         outcome.sheets_status = "not_configured"
@@ -819,6 +935,7 @@ __all__ = [
     "SheetRow",
     "Step5Outcome",
     "MAIN_HEADERS",
+    "LEAD_ALL_HEADERS",
     "AUDIT_HEADERS",
     "export_verified_leads",
 ]

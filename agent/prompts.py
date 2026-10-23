@@ -59,4 +59,4 @@ Queries already used (do not repeat):
 >>>
 Only {found} usable organizations were found so far (target {target}).
 Propose up to 4 new web search queries that would find more real {category_desc} organizations in {city}.
-Each query must be 3 to 8 words. No URLs, no quotes, no site: operators."""
+Each query must be 3 to 5 words. No URLs, no quotes, no site: operators."""

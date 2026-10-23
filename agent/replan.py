@@ -15,7 +15,7 @@ _log = logging.getLogger("agent")
 
 MAX_NEW_QUERIES = 4
 MIN_WORDS = 3
-MAX_WORDS = 5  # DuckDuckGo returns little or nothing for longer queries
+MAX_WORDS = 5  # Keep validation aligned with the prompt; search phrases stay concise.
 
 URL_PATTERN = re.compile(r"https?://|www\.|\.(com|in|org|net|edu)\b|site:", re.IGNORECASE)
 
